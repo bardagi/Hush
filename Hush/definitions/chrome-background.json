@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "name": "chrome-background",
+  "displayName": "Chrome",
+  "definitionVersion": 1,
+  "updateDate": "2026-06-18T00:00:00Z",
+  "description": "Stop Google Chrome from running in the background.",
+  "actions": [
+    {
+      "type": "killProcess",
+      "match": { "name": "chrome.exe" },
+      "killTree": true,
+      "comment": "Close all Chrome processes, including background tabs/apps living in the tray"
+    },
+    {
+      "type": "killProcess",
+      "match": { "name": "elevation_service.exe", "company": "Google LLC" },
+      "optional": true,
+      "comment": "Chrome's elevation helper"
+    },
+    {
+      "type": "setRegistryValue",
+      "hive": "HKLM",
+      "path": "SOFTWARE\\Policies\\Google\\Chrome",
+      "name": "BackgroundModeEnabled",
+      "valueType": "DWord",
+      "data": 0,
+      "comment": "Policy: Chrome must NOT keep background apps alive after the window is closed"
+    },
+    {
+      "type": "removeAutostart",
+      "kind": "registryRun",
+      "scope": "allUsers",
+      "name": "GoogleChromeAutoLaunch_*",
+      "comment": "Remove Chrome's per-user auto-launch on logon (name has a per-install hash suffix)"
+    },
+    {
+      "type": "stopService",
+      "name": "gupdate",
+      "disable": true,
+      "optional": true,
+      "comment": "Google Update service (optional; disabling pauses Chrome auto-updates)"
+    },
+    {
+      "type": "stopService",
+      "name": "gupdatem",
+      "disable": true,
+      "optional": true,
+      "comment": "Google Update per-machine service (optional)"
+    },
+    {
+      "type": "removeAutostart",
+      "kind": "scheduledTask",
+      "name": "GoogleUpdateTaskMachine*",
+      "disableOnly": true,
+      "optional": true,
+      "comment": "Disable (not delete) the Google updater tasks that re-spawn background processes"
+    }
+  ]
+}

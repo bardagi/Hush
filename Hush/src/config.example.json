@@ -1,0 +1,13 @@
+{
+  "_comment": "Hush machine config. The installer copies this to C:\\ProgramData\\Hush\\config.json and fills in your values. publicKeyXml is the PINNED RSA public key produced by tools\\New-HushSigningKey.ps1 — the private half must stay offline.",
+
+  "repoRawBaseUrl": "https://raw.githubusercontent.com/YOUR-ORG/hush-definitions/main/definitions",
+  "manifestFile": "manifest.json",
+
+  "publicKeyXml": "<RSAKeyValue><Modulus>REPLACE-WITH-YOUR-PUBLIC-KEY</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>",
+
+  "intervalMinutes": 15,
+  "maxDefinitionAgeHours": 72,
+
+  "protectedServices": [ "WinDefend", "Sense", "wuauserv" ]
+}

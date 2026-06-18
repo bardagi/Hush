@@ -1,0 +1,4 @@
+# Hush definitions repo: preserve exact bytes so signatures/hashes stay valid.
+# Without this, git autocrlf could rewrite line endings and break verification.
+*.json   -text
+*.sig    -text binary

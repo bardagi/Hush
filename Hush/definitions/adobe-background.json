@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "name": "adobe-background",
+  "displayName": "Adobe",
+  "definitionVersion": 1,
+  "updateDate": "2026-06-18T00:00:00Z",
+  "description": "Stop Adobe background updaters and Creative Cloud helpers.",
+  "actions": [
+    {
+      "type": "killProcess",
+      "match": { "name": "AdobeNotificationClient.exe" },
+      "optional": true,
+      "comment": "Creative Cloud notification helper"
+    },
+    {
+      "type": "killProcess",
+      "match": { "name": "CCXProcess.exe" },
+      "optional": true,
+      "comment": "Creative Cloud experience background process"
+    },
+    {
+      "type": "killProcess",
+      "match": { "name": "AdobeIPCBroker.exe" },
+      "optional": true
+    },
+    {
+      "type": "killProcess",
+      "match": { "name": "Adobe Desktop Service.exe" },
+      "killTree": true,
+      "optional": true,
+      "comment": "Creative Cloud desktop service that keeps helpers alive"
+    },
+    {
+      "type": "stopService",
+      "name": "AdobeUpdateService",
+      "disable": true,
+      "optional": true,
+      "comment": "Adobe background update service"
+    },
+    {
+      "type": "stopService",
+      "name": "AGSService",
+      "disable": true,
+      "optional": true,
+      "comment": "Adobe Genuine Software service"
+    },
+    {
+      "type": "removeAutostart",
+      "kind": "registryRun",
+      "scope": "allUsers",
+      "name": "AdobeAAMUpdater*",
+      "comment": "Adobe AAM auto-updater logon entry"
+    },
+    {
+      "type": "removeAutostart",
+      "kind": "registryRun",
+      "scope": "allUsers",
+      "name": "Adobe CCXProcess",
+      "optional": true
+    },
+    {
+      "type": "removeAutostart",
+      "kind": "scheduledTask",
+      "name": "Adobe*",
+      "disableOnly": true,
+      "optional": true,
+      "comment": "Disable Adobe scheduled tasks that relaunch background updaters"
+    }
+  ]
+}

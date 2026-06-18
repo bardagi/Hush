@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "updateDate": "2026-06-18T00:00:00Z",
+  "definitions": [
+    {
+      "name": "chrome-background",
+      "displayName": "Chrome",
+      "definitionVersion": 1,
+      "updateDate": "2026-06-18T00:00:00Z",
+      "description": "Stop background tabs/apps & auto-launch",
+      "file": "chrome-background.json",
+      "sha256": "46d9f4bf33cbe0182edb93fab8ed93164e79e45387af8acf2e82e4f33c311739"
+    },
+    {
+      "name": "adobe-background",
+      "displayName": "Adobe",
+      "definitionVersion": 1,
+      "updateDate": "2026-06-18T00:00:00Z",
+      "description": "Stop background updater & cloud sync",
+      "file": "adobe-background.json",
+      "sha256": "4bd023a06572ec7976f02497ba6ea9eb689750162292bcc8dd11e2c1b7c4a9c5"
+    }
+  ]
+}
