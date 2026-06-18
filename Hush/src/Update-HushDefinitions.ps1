@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
     Update-HushDefinitions.ps1   (FETCHER)
 
@@ -10,8 +10,6 @@
     blast radius. The SYSTEM enforcer re-verifies the cache before trusting it.
 #>
 
-param([switch]$Quiet)
-
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -21,7 +19,7 @@ function Get-HushUrlBytes {
     param([Parameter(Mandatory)][string]$Url)
     Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
     $handler = New-Object System.Net.Http.HttpClientHandler
-    $client  = New-Object System.Net.Http.HttpClient($handler)
+    $client = New-Object System.Net.Http.HttpClient($handler)
     try {
         $client.Timeout = [timespan]::FromSeconds(30)
         $client.DefaultRequestHeaders.UserAgent.ParseAdd('Hush/1.0')
@@ -36,19 +34,19 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls13 } catch { }
 
-    $paths  = Get-HushPaths
+    $paths = Get-HushPaths
     $config = Get-HushConfig
     if (-not $config) { throw "Config not found at $($paths.Config)" }
     if (-not (Test-Path $paths.Cache)) { New-Item -ItemType Directory -Path $paths.Cache -Force | Out-Null }
 
-    $base        = $config.repoRawBaseUrl.TrimEnd('/')
+    $base = $config.repoRawBaseUrl.TrimEnd('/')
     $manifestUrl = "$base/$($config.manifestFile)"
-    $sigUrl      = "$manifestUrl.sig"
+    $sigUrl = "$manifestUrl.sig"
 
     Write-HushLog -Component 'fetch' -Message "Fetching catalog from $manifestUrl"
 
     $manifestBytes = Get-HushUrlBytes -Url $manifestUrl
-    $sigBytes      = Get-HushUrlBytes -Url $sigUrl
+    $sigBytes = Get-HushUrlBytes -Url $sigUrl
 
     # 1) Verify the catalog signature against the pinned public key. Hard stop on failure.
     if (-not (Test-HushSignature -Data $manifestBytes -Signature $sigBytes -PublicKeyXml $config.publicKeyXml)) {
@@ -114,8 +112,7 @@ try {
 
     Write-HushLog -Component 'fetch' -Message "Fetch complete. $($staged.Count) definition(s) verified and cached."
     exit 0
-}
-catch {
+} catch {
     Write-HushLog -Level Error -Component 'fetch' -Message "Fetch aborted: $($_.Exception.Message)"
     exit 1
 }

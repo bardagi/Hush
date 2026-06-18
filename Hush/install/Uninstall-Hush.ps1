@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 #Requires -RunAsAdministrator
 <#
     Uninstall-Hush.ps1 — removes the scheduled tasks, Event Log source, Start-Menu
@@ -16,7 +16,7 @@ $ErrorActionPreference = 'Continue'
 
 Write-Host 'Removing Hush ...' -ForegroundColor Cyan
 
-foreach ($task in @('Hush-Fetch','Hush-Enforce')) {
+foreach ($task in @('Hush-Fetch', 'Hush-Enforce')) {
     if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName $task -Confirm:$false
         Write-Host "  removed scheduled task $task"

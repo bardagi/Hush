@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
     Protect-HushManifest.ps1 — (re)build and sign the catalog after editing definitions.
 
@@ -29,18 +29,18 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 function Write-Utf8NoBom([string]$Path, [string]$Text) { [System.IO.File]::WriteAllText($Path, $Text, $utf8NoBom) }
 function Get-Sha256Hex([byte[]]$Bytes) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
-    try { ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-','').ToLowerInvariant() }
+    try { ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() }
     finally { $sha.Dispose() }
 }
 
 $manifestPath = Join-Path $DefinitionsDir 'manifest.json'
-$sigPath      = "$manifestPath.sig"
+$sigPath = "$manifestPath.sig"
 
 $defs = @()
 foreach ($file in (Get-ChildItem -Path $DefinitionsDir -Filter *.json | Where-Object { $_.Name -ne 'manifest.json' })) {
     $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
-    $def   = [System.Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF) | ConvertFrom-Json
-    foreach ($f in @('name','displayName','definitionVersion','updateDate','description')) {
+    $def = [System.Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF) | ConvertFrom-Json
+    foreach ($f in @('name', 'displayName', 'definitionVersion', 'updateDate', 'description')) {
         if ($null -eq $def.PSObject.Properties[$f]) { throw "$($file.Name): missing required field '$f'" }
     }
     $defs += [pscustomobject]@{

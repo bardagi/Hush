@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
     Hush.Common.ps1
     Shared library for Hush: paths, logging, JSON I/O, signature/hash verification,
@@ -23,16 +23,16 @@ function Get-HushRoot {
 function Get-HushPaths {
     $root = Get-HushRoot
     [pscustomobject]@{
-        Root        = $root
-        Bin         = Join-Path $root 'bin'
-        Cache       = Join-Path $root 'cache'
-        Logs        = Join-Path $root 'logs'
-        Backups     = Join-Path $root 'backups'
-        Config      = Join-Path $root 'config.json'
-        Enabled     = Join-Path $root 'enabled.json'
-        Exclusions  = Join-Path $root 'exclusions.json'
-        State       = Join-Path $root 'state.json'
-        LogFile     = Join-Path (Join-Path $root 'logs') 'hush.log'
+        Root             = $root
+        Bin              = Join-Path $root 'bin'
+        Cache            = Join-Path $root 'cache'
+        Logs             = Join-Path $root 'logs'
+        Backups          = Join-Path $root 'backups'
+        Config           = Join-Path $root 'config.json'
+        Enabled          = Join-Path $root 'enabled.json'
+        Exclusions       = Join-Path $root 'exclusions.json'
+        State            = Join-Path $root 'state.json'
+        LogFile          = Join-Path (Join-Path $root 'logs') 'hush.log'
         ManifestCache    = Join-Path (Join-Path $root 'cache') 'manifest.json'
         ManifestSigCache = Join-Path (Join-Path $root 'cache') 'manifest.json.sig'
     }
@@ -46,11 +46,11 @@ function Write-HushLog {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Message,
-        [ValidateSet('Info','Warning','Error')][string]$Level = 'Info',
+        [ValidateSet('Info', 'Warning', 'Error')][string]$Level = 'Info',
         [string]$Component = 'Hush'
     )
     $paths = Get-HushPaths
-    $line  = '{0} [{1}] [{2}] {3}' -f (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'), $Level, $Component, $Message
+    $line = '{0} [{1}] [{2}] {3}' -f (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'), $Level, $Component, $Message
 
     try {
         if (-not (Test-Path $paths.Logs)) { New-Item -ItemType Directory -Path $paths.Logs -Force | Out-Null }
@@ -70,9 +70,9 @@ function Write-HushLog {
     } catch { }
 
     switch ($Level) {
-        'Error'   { Write-Host $line -ForegroundColor Red }
+        'Error' { Write-Host $line -ForegroundColor Red }
         'Warning' { Write-Host $line -ForegroundColor Yellow }
-        default   { Write-Host $line }
+        default { Write-Host $line }
     }
 }
 
@@ -89,7 +89,7 @@ function Write-HushJsonAtomic {
     $dir = Split-Path -Parent $Path
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $json = $Object | ConvertTo-Json -Depth 16
-    $tmp  = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
+    $tmp = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
     Set-Content -Path $tmp -Value $json -Encoding UTF8
     Move-Item -Path $tmp -Destination $Path -Force   # rename = atomic on same volume
 }
@@ -109,7 +109,7 @@ function ConvertTo-HushUtc {
     # [datetime] (ConvertFrom-Json auto-converts ISO strings to DateTime).
     param($Value)
     if ($null -eq $Value) { return $null }
-    if ($Value -is [datetime])       { return $Value.ToUniversalTime() }
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime() }
     if ($Value -is [datetimeoffset]) { return $Value.UtcDateTime }
     return [datetimeoffset]::Parse([string]$Value, [System.Globalization.CultureInfo]::InvariantCulture,
         [System.Globalization.DateTimeStyles]::RoundtripKind).UtcDateTime
@@ -120,7 +120,7 @@ function ConvertTo-HushUtc {
 function Get-HushSha256Hex {
     param([Parameter(Mandatory)][byte[]]$Bytes)
     $sha = [System.Security.Cryptography.SHA256]::Create()
-    try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-','').ToLowerInvariant() }
+    try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() }
     finally { $sha.Dispose() }
 }
 
@@ -149,14 +149,14 @@ function Test-HushSignature {
 # ----------------------------------------------------------------------------- schema
 
 $script:HushAllowedActions = @{
-    killProcess     = @('match')
-    stopService     = @('name')
-    removeAutostart = @('kind','name')
-    setRegistryValue= @('hive','path','name','valueType','data')
+    killProcess      = @('match')
+    stopService      = @('name')
+    removeAutostart  = @('kind', 'name')
+    setRegistryValue = @('hive', 'path', 'name', 'valueType', 'data')
 }
-$script:HushAutostartKinds = @('registryRun','startupFolder','scheduledTask')
-$script:HushRegHives       = @('HKLM','HKCU')
-$script:HushRegValueTypes  = @('String','ExpandString','DWord','QWord','MultiString','Binary')
+$script:HushAutostartKinds = @('registryRun', 'startupFolder', 'scheduledTask')
+$script:HushRegHives = @('HKLM', 'HKCU')
+$script:HushRegValueTypes = @('String', 'ExpandString', 'DWord', 'QWord', 'MultiString', 'Binary')
 
 function Test-HushDefinition {
     <# Validate a parsed definition object. Returns @{ Ok = [bool]; Errors = @() } #>
@@ -165,9 +165,9 @@ function Test-HushDefinition {
 
     function Has($obj, $name) { Test-HushProp $obj $name }
 
-    if (-not (Has $Def 'schemaVersion'))     { $errors.Add('missing schemaVersion') }
-    elseif ($Def.schemaVersion -ne 1)        { $errors.Add("unsupported schemaVersion '$($Def.schemaVersion)'") }
-    foreach ($f in @('name','definitionVersion','updateDate','actions')) {
+    if (-not (Has $Def 'schemaVersion')) { $errors.Add('missing schemaVersion') }
+    elseif ($Def.schemaVersion -ne 1) { $errors.Add("unsupported schemaVersion '$($Def.schemaVersion)'") }
+    foreach ($f in @('name', 'definitionVersion', 'updateDate', 'actions')) {
         if (-not (Has $Def $f)) { $errors.Add("missing $f") }
     }
     if ((Has $Def 'definitionVersion') -and -not ($Def.definitionVersion -is [int] -or $Def.definitionVersion -is [long])) {
@@ -210,14 +210,14 @@ function Test-HushDefinition {
 
 # Non-overridable. Even a signed definition cannot touch these.
 $script:HushProtectedProcesses = @(
-    'system','registry','idle','smss','csrss','wininit','winlogon','services',
-    'lsass','lsaiso','fontdrvhost','dwm','svchost','spoolsv','memcompression'
+    'system', 'registry', 'idle', 'smss', 'csrss', 'wininit', 'winlogon', 'services',
+    'lsass', 'lsaiso', 'fontdrvhost', 'dwm', 'svchost', 'spoolsv', 'memcompression'
 )
-$script:HushProtectedServicesFloor = @('WinDefend','Sense','SecurityHealthService','WdNisSvc')
+$script:HushProtectedServicesFloor = @('WinDefend', 'Sense', 'SecurityHealthService', 'WdNisSvc')
 
 function Test-HushProtectedProcess {
     param([Parameter(Mandatory)][string]$Name)
-    $base = ($Name -replace '\.exe$','').Trim().ToLowerInvariant()
+    $base = ($Name -replace '\.exe$', '').Trim().ToLowerInvariant()
     return ($script:HushProtectedProcesses -contains $base)
 }
 
@@ -235,7 +235,7 @@ function Test-HushProtectedService {
 
 function Test-HushExcluded {
     param(
-        [Parameter(Mandatory)][ValidateSet('process','service','autostart')][string]$Type,
+        [Parameter(Mandatory)][ValidateSet('process', 'service', 'autostart')][string]$Type,
         [Parameter(Mandatory)][string]$Name,
         $Exclusions
     )
@@ -292,9 +292,9 @@ function Backup-HushAutostart {
     param([Parameter(Mandatory)][hashtable]$Entry)
     $paths = Get-HushPaths
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $dir   = Join-Path $paths.Backups $stamp
+    $dir = Join-Path $paths.Backups $stamp
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $file  = Join-Path $dir ("{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $file = Join-Path $dir ("{0}.json" -f [guid]::NewGuid().ToString('N'))
     $Entry['backedUpUtc'] = [datetime]::UtcNow.ToString('o')
     Write-HushJsonAtomic -Path $file -Object ([pscustomobject]$Entry)
     return $file
@@ -321,29 +321,29 @@ function Invoke-HushKillProcess {
 
     if (Test-HushProtectedProcess -Name $name) {
         Write-HushLog -Level Warning -Component 'kill' -Message "BLOCKED protected process '$name' (guardrail)"
-        return ,(New-HushResult 'killProcess' $name 'Blocked' 'protected by guardrail')
+        return , (New-HushResult 'killProcess' $name 'Blocked' 'protected by guardrail')
     }
     if (Test-HushExcluded -Type process -Name $name -Exclusions $Context.Exclusions) {
         Write-HushLog -Level Info -Component 'kill' -Message "Excluded '$name' by local policy"
-        return ,(New-HushResult 'killProcess' $name 'Excluded' 'local exclusion')
+        return , (New-HushResult 'killProcess' $name 'Excluded' 'local exclusion')
     }
 
-    $safeName = $name.Replace("'","''")
+    $safeName = $name.Replace("'", "''")
     $procs = @(Get-CimInstance Win32_Process -Filter "Name = '$safeName'" -ErrorAction SilentlyContinue)
 
     # Optional narrowing by publisher company or executable path (@() keeps it an array).
     if ((Test-HushProp $Action.match 'company') -and $Action.match.company) {
         $procs = @($procs | Where-Object {
-            $p = $_.ExecutablePath
-            $p -and (Test-Path $p) -and ((Get-Item $p).VersionInfo.CompanyName -like $Action.match.company)
-        })
+                $p = $_.ExecutablePath
+                $p -and (Test-Path $p) -and ((Get-Item $p).VersionInfo.CompanyName -like $Action.match.company)
+            })
     }
     if ((Test-HushProp $Action.match 'path') -and $Action.match.path) {
         $procs = @($procs | Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -like $Action.match.path) })
     }
 
     if ($procs.Count -eq 0) {
-        return ,(New-HushResult 'killProcess' $name 'Skipped' 'no matching process running')
+        return , (New-HushResult 'killProcess' $name 'Skipped' 'no matching process running')
     }
 
     $killTree = ((Test-HushProp $Action 'killTree') -and $Action.killTree)
@@ -377,27 +377,27 @@ function Invoke-HushStopService {
 
     if (Test-HushProtectedService -Name $name -Config $Context.Config) {
         Write-HushLog -Level Warning -Component 'service' -Message "BLOCKED protected service '$name' (guardrail)"
-        return ,(New-HushResult 'stopService' $name 'Blocked' 'protected by guardrail')
+        return , (New-HushResult 'stopService' $name 'Blocked' 'protected by guardrail')
     }
     if (Test-HushExcluded -Type service -Name $name -Exclusions $Context.Exclusions) {
-        return ,(New-HushResult 'stopService' $name 'Excluded' 'local exclusion')
+        return , (New-HushResult 'stopService' $name 'Excluded' 'local exclusion')
     }
 
     $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
-    if (-not $svc) { return ,(New-HushResult 'stopService' $name 'Skipped' 'service not present') }
+    if (-not $svc) { return , (New-HushResult 'stopService' $name 'Skipped' 'service not present') }
 
     $disable = ((Test-HushProp $Action 'disable') -and $Action.disable)
     if ($Context.Preview) {
         $what = if ($disable) { 'would stop and disable' } else { 'would stop' }
-        return ,(New-HushResult 'stopService' $name 'Preview' $what)
+        return , (New-HushResult 'stopService' $name 'Preview' $what)
     }
     try {
         if ($svc.Status -ne 'Stopped') { Stop-Service -Name $name -Force -ErrorAction Stop }
         if ($disable) { Set-Service -Name $name -StartupType Disabled -ErrorAction Stop }
         $detail = if ($disable) { 'stopped and disabled' } else { 'stopped' }
-        return ,(New-HushResult 'stopService' $name 'Applied' $detail)
+        return , (New-HushResult 'stopService' $name 'Applied' $detail)
     } catch {
-        return ,(New-HushResult 'stopService' $name 'Error' $_.Exception.Message)
+        return , (New-HushResult 'stopService' $name 'Error' $_.Exception.Message)
     }
 }
 
@@ -439,11 +439,11 @@ function Get-HushStartupFolders {
 function Invoke-HushRemoveAutostart {
     param([Parameter(Mandatory)]$Action, [Parameter(Mandatory)]$Context)
     $pattern = [string]$Action.name
-    $scope   = if (Test-HushProp $Action 'scope') { [string]$Action.scope } else { 'allUsers' }
+    $scope = if (Test-HushProp $Action 'scope') { [string]$Action.scope } else { 'allUsers' }
     $results = @()
 
     if (Test-HushExcluded -Type autostart -Name $pattern -Exclusions $Context.Exclusions) {
-        return ,(New-HushResult 'removeAutostart' $pattern 'Excluded' 'local exclusion')
+        return , (New-HushResult 'removeAutostart' $pattern 'Excluded' 'local exclusion')
     }
 
     switch ($Action.kind) {
@@ -458,8 +458,9 @@ function Invoke-HushRemoveAutostart {
                     }
                     try {
                         Backup-HushAutostart @{ kind='registryRun'; keyPath=$keyPath; valueName=$valName;
-                            valueKind=$key.GetValueKind($valName).ToString();
-                            valueData=$key.GetValue($valName, $null, 'DoNotExpandEnvironmentNames') } | Out-Null
+                            valueKind =$key.GetValueKind($valName).ToString();
+                            valueData =$key.GetValue($valName, $null, 'DoNotExpandEnvironmentNames')
+                        } | Out-Null
                         Remove-ItemProperty -LiteralPath $keyPath -Name $valName -Force -ErrorAction Stop
                         $results += New-HushResult 'removeAutostart' "$keyPath\$valName" 'Applied' 'Run value removed (backed up)'
                     } catch {
@@ -476,7 +477,7 @@ function Invoke-HushRemoveAutostart {
                         continue
                     }
                     try {
-                        $backupDir = Split-Path -Parent (Backup-HushAutostart @{ kind='startupFolder'; originalPath=$item.FullName; fileName=$item.Name })
+                        $backupDir = Split-Path -Parent (Backup-HushAutostart @{ kind = 'startupFolder'; originalPath = $item.FullName; fileName = $item.Name })
                         Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $backupDir $item.Name) -Force
                         Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop
                         $results += New-HushResult 'removeAutostart' $item.FullName 'Applied' 'Startup item removed (backed up)'
@@ -498,7 +499,8 @@ function Invoke-HushRemoveAutostart {
                 try {
                     $xml = Export-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath -ErrorAction SilentlyContinue
                     Backup-HushAutostart @{ kind='scheduledTask'; taskName=$task.TaskName; taskPath=$task.TaskPath;
-                        disableOnly=$disableOnly; xml="$xml" } | Out-Null
+                        disableOnly=$disableOnly; xml="$xml"
+                    } | Out-Null
                     if ($disableOnly) {
                         Disable-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath -ErrorAction Stop | Out-Null
                         $results += New-HushResult 'removeAutostart' $full 'Applied' 'scheduled task disabled (backed up)'
@@ -523,25 +525,25 @@ function Invoke-HushSetRegistryValue {
     $target = "$full\$($Action.name)"
 
     if ($Context.Preview) {
-        return ,(New-HushResult 'setRegistryValue' $target 'Preview' "would set = $($Action.data)")
+        return , (New-HushResult 'setRegistryValue' $target 'Preview' "would set = $($Action.data)")
     }
     try {
         if (-not (Test-Path $full)) { New-Item -Path $full -Force | Out-Null }
         New-ItemProperty -Path $full -Name $Action.name -PropertyType $Action.valueType -Value $Action.data -Force | Out-Null
-        return ,(New-HushResult 'setRegistryValue' $target 'Applied' "set = $($Action.data)")
+        return , (New-HushResult 'setRegistryValue' $target 'Applied' "set = $($Action.data)")
     } catch {
-        return ,(New-HushResult 'setRegistryValue' $target 'Error' $_.Exception.Message)
+        return , (New-HushResult 'setRegistryValue' $target 'Error' $_.Exception.Message)
     }
 }
 
 function Invoke-HushAction {
     param([Parameter(Mandatory)]$Action, [Parameter(Mandatory)]$Context)
     switch ($Action.type) {
-        'killProcess'      { Invoke-HushKillProcess     -Action $Action -Context $Context }
-        'stopService'      { Invoke-HushStopService     -Action $Action -Context $Context }
-        'removeAutostart'  { Invoke-HushRemoveAutostart -Action $Action -Context $Context }
+        'killProcess' { Invoke-HushKillProcess     -Action $Action -Context $Context }
+        'stopService' { Invoke-HushStopService     -Action $Action -Context $Context }
+        'removeAutostart' { Invoke-HushRemoveAutostart -Action $Action -Context $Context }
         'setRegistryValue' { Invoke-HushSetRegistryValue -Action $Action -Context $Context }
-        default            { New-HushResult $Action.type '' 'Error' 'unknown action type' }
+        default { New-HushResult $Action.type '' 'Error' 'unknown action type' }
     }
 }
 

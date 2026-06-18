@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
     Hush-Settings.ps1   (GUI)
 
@@ -17,11 +17,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ----------------------------------------------------------------- self-elevation
-$identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Start-Process -FilePath 'powershell.exe' -Verb RunAs `
-        -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$PSCommandPath`"")
+        -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
     return
 }
 
@@ -201,30 +201,30 @@ if (-not $catalog) {
 }
 
 (C 'BtnDefSave').Add_Click({
-    $sel = @($defCheckboxes.Keys | Where-Object { $defCheckboxes[$_].IsChecked })
-    Write-HushJsonAtomic -Path $paths.Enabled -Object ([pscustomobject]@{ enabled = $sel })
-    Start-HushTask -Name 'Hush-Fetch'   -ScriptName 'Update-HushDefinitions.ps1'
-    Start-HushTask -Name 'Hush-Enforce' -ScriptName 'Invoke-Hush.ps1'
-    [System.Windows.MessageBox]::Show("Saved. Enforcing: $([string]::Join(', ', $sel))", 'Hush') | Out-Null
-})
+        $sel = @($defCheckboxes.Keys | Where-Object { $defCheckboxes[$_].IsChecked })
+        Write-HushJsonAtomic -Path $paths.Enabled -Object ([pscustomobject]@{ enabled = $sel })
+        Start-HushTask -Name 'Hush-Fetch'   -ScriptName 'Update-HushDefinitions.ps1'
+        Start-HushTask -Name 'Hush-Enforce' -ScriptName 'Invoke-Hush.ps1'
+        [System.Windows.MessageBox]::Show("Saved. Enforcing: $([string]::Join(', ', $sel))", 'Hush') | Out-Null
+    })
 
 # ----------------------------------------------------------------- Exclusions
 $excl = Read-HushJson -Path $paths.Exclusions
 function Join-Lines($a) { if ($a) { [string]::Join("`r`n", @($a)) } else { '' } }
 if ($excl) {
     (C 'ExclProc').Text = Join-Lines $excl.processes
-    (C 'ExclSvc').Text  = Join-Lines $excl.services
+    (C 'ExclSvc').Text = Join-Lines $excl.services
     (C 'ExclAuto').Text = Join-Lines $excl.autostarts
 }
 (C 'BtnExclSave').Add_Click({
-    function Split-Lines($t) { @($t -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
-    Write-HushJsonAtomic -Path $paths.Exclusions -Object ([pscustomobject]@{
-        processes  = Split-Lines (C 'ExclProc').Text
-        services   = Split-Lines (C 'ExclSvc').Text
-        autostarts = Split-Lines (C 'ExclAuto').Text
+        function Split-Lines($t) { @($t -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+        Write-HushJsonAtomic -Path $paths.Exclusions -Object ([pscustomobject]@{
+                processes  = Split-Lines (C 'ExclProc').Text
+                services   = Split-Lines (C 'ExclSvc').Text
+                autostarts = Split-Lines (C 'ExclAuto').Text
+            })
+        [System.Windows.MessageBox]::Show('Exclusions saved.', 'Hush') | Out-Null
     })
-    [System.Windows.MessageBox]::Show('Exclusions saved.', 'Hush') | Out-Null
-})
 
 # ----------------------------------------------------------------- Snooze / quiet hours
 function Get-State { $s = Read-HushJson -Path $paths.State; if (-not $s) { [pscustomobject]@{} } else { $s } }
@@ -247,30 +247,30 @@ function Update-SnoozeStatus {
 (C 'BtnSnooze1').Add_Click({ Set-Snooze ([datetime]::UtcNow.AddHours(1)) })
 (C 'BtnSnooze4').Add_Click({ Set-Snooze ([datetime]::UtcNow.AddHours(4)) })
 (C 'BtnSnoozeT').Add_Click({
-    $next7 = (Get-Date).Date.AddDays(1).AddHours(7)
-    if ((Get-Date).Hour -lt 7) { $next7 = (Get-Date).Date.AddHours(7) }
-    Set-Snooze ($next7.ToUniversalTime())
-})
+        $next7 = (Get-Date).Date.AddDays(1).AddHours(7)
+        if ((Get-Date).Hour -lt 7) { $next7 = (Get-Date).Date.AddHours(7) }
+        Set-Snooze ($next7.ToUniversalTime())
+    })
 (C 'BtnSnoozeClr').Add_Click({
-    $s = Get-State; $s | Add-Member snoozeUntil $null -Force
-    Write-HushJsonAtomic -Path $paths.State -Object $s; Update-SnoozeStatus
-})
+        $s = Get-State; $s | Add-Member snoozeUntil $null -Force
+        Write-HushJsonAtomic -Path $paths.State -Object $s; Update-SnoozeStatus
+    })
 # Quiet-hours initial values (first window if any).
 $st0 = Get-State
 if ((Test-HushProp $st0 'quietHours') -and @($st0.quietHours).Count -gt 0) {
     (C 'QhStart').Text = $st0.quietHours[0].start; (C 'QhEnd').Text = $st0.quietHours[0].end
 }
 (C 'BtnQhSave').Add_Click({
-    $s = Get-State
-    $s | Add-Member quietHours @([pscustomobject]@{ start = (C 'QhStart').Text.Trim(); end = (C 'QhEnd').Text.Trim() }) -Force
-    Write-HushJsonAtomic -Path $paths.State -Object $s
-    [System.Windows.MessageBox]::Show('Quiet hours saved.', 'Hush') | Out-Null
-})
+        $s = Get-State
+        $s | Add-Member quietHours @([pscustomobject]@{ start = (C 'QhStart').Text.Trim(); end = (C 'QhEnd').Text.Trim() }) -Force
+        Write-HushJsonAtomic -Path $paths.State -Object $s
+        [System.Windows.MessageBox]::Show('Quiet hours saved.', 'Hush') | Out-Null
+    })
 (C 'BtnQhClear').Add_Click({
-    $s = Get-State; $s | Add-Member quietHours @() -Force
-    Write-HushJsonAtomic -Path $paths.State -Object $s
-    (C 'QhStart').Text = ''; (C 'QhEnd').Text = ''
-})
+        $s = Get-State; $s | Add-Member quietHours @() -Force
+        Write-HushJsonAtomic -Path $paths.State -Object $s
+        (C 'QhStart').Text = ''; (C 'QhEnd').Text = ''
+    })
 Update-SnoozeStatus
 
 # ----------------------------------------------------------------- Backups
@@ -281,7 +281,7 @@ function Update-BackupList {
         try {
             $b = Read-HushJson -Path $f.FullName
             $target = switch ($b.kind) {
-                'registryRun'   { "$($b.keyPath)\$($b.valueName)" }
+                'registryRun' { "$($b.keyPath)\$($b.valueName)" }
                 'startupFolder' { $b.originalPath }
                 'scheduledTask' { "$($b.taskPath)$($b.taskName)" }
                 default { $f.Name }
@@ -295,11 +295,11 @@ function Update-BackupList {
 }
 (C 'BtnBackupRefresh').Add_Click({ Update-BackupList })
 (C 'BtnBackupRestore').Add_Click({
-    $sel = (C 'BackupList').SelectedItem
-    if (-not $sel) { return }
-    try { Restore-HushBackup -BackupFile $sel.Tag; [System.Windows.MessageBox]::Show('Restored.', 'Hush') | Out-Null }
-    catch { [System.Windows.MessageBox]::Show("Restore failed: $($_.Exception.Message)", 'Hush') | Out-Null }
-})
+        $sel = (C 'BackupList').SelectedItem
+        if (-not $sel) { return }
+        try { Restore-HushBackup -BackupFile $sel.Tag; [System.Windows.MessageBox]::Show('Restored.', 'Hush') | Out-Null }
+        catch { [System.Windows.MessageBox]::Show("Restore failed: $($_.Exception.Message)", 'Hush') | Out-Null }
+    })
 Update-BackupList
 
 # ----------------------------------------------------------------- Status
@@ -307,30 +307,30 @@ function Update-StatusTab {
     $s = Get-State
     $lf = if ((Test-HushProp $s 'lastFetchUtc') -and $s.lastFetchUtc) { (ConvertTo-HushUtc $s.lastFetchUtc).ToLocalTime() } else { 'never' }
     $le = if ((Test-HushProp $s 'lastEnforceUtc') -and $s.lastEnforceUtc) { (ConvertTo-HushUtc $s.lastEnforceUtc).ToLocalTime() } else { 'never' }
-    (C 'StLastFetch').Text   = "Last definitions refresh: $lf"
+    (C 'StLastFetch').Text = "Last definitions refresh: $lf"
     (C 'StLastEnforce').Text = "Last enforcement run: $le"
-    (C 'StResult').Text      = if ((Test-HushProp $s 'lastEnforceResult') -and $s.lastEnforceResult) { "Result: $($s.lastEnforceResult)" } else { '' }
+    (C 'StResult').Text = if ((Test-HushProp $s 'lastEnforceResult') -and $s.lastEnforceResult) { "Result: $($s.lastEnforceResult)" } else { '' }
     if ((Test-HushProp $s 'staleDefinitions') -and $s.staleDefinitions) {
         (C 'StaleText').Text = 'Definitions are stale — they have not refreshed recently. Check connectivity or the repo.'
         (C 'StaleBanner').Visibility = 'Visible'
     }
 }
 (C 'BtnFetchNow').Add_Click({
-    Start-HushTask -Name 'Hush-Fetch' -ScriptName 'Update-HushDefinitions.ps1'
-    [System.Windows.MessageBox]::Show('Refresh triggered. Reopen the window to see the updated catalog.', 'Hush') | Out-Null
-})
+        Start-HushTask -Name 'Hush-Fetch' -ScriptName 'Update-HushDefinitions.ps1'
+        [System.Windows.MessageBox]::Show('Refresh triggered. Reopen the window to see the updated catalog.', 'Hush') | Out-Null
+    })
 (C 'BtnPreview').Add_Click({
-    $script = Resolve-HushScript 'Invoke-Hush.ps1'
-    $res = & $script -Preview
-    $lines = @($res | ForEach-Object { "$($_.Type)  $($_.Target)  [$($_.Status)] $($_.Detail)" })
-    $text = if ($lines.Count) { [string]::Join("`r`n", $lines) } else { 'Nothing would be changed.' }
-    [System.Windows.MessageBox]::Show($text, 'Hush — preview') | Out-Null
-})
+        $script = Resolve-HushScript 'Invoke-Hush.ps1'
+        $res = & $script -Preview
+        $lines = @($res | ForEach-Object { "$($_.Type)  $($_.Target)  [$($_.Status)] $($_.Detail)" })
+        $text = if ($lines.Count) { [string]::Join("`r`n", $lines) } else { 'Nothing would be changed.' }
+        [System.Windows.MessageBox]::Show($text, 'Hush — preview') | Out-Null
+    })
 (C 'BtnRunNow').Add_Click({
-    Start-HushTask -Name 'Hush-Enforce' -ScriptName 'Invoke-Hush.ps1'
-    [System.Windows.MessageBox]::Show('Enforcement triggered.', 'Hush') | Out-Null
-    Update-StatusTab
-})
+        Start-HushTask -Name 'Hush-Enforce' -ScriptName 'Invoke-Hush.ps1'
+        [System.Windows.MessageBox]::Show('Enforcement triggered.', 'Hush') | Out-Null
+        Update-StatusTab
+    })
 Update-StatusTab
 
 [void]$window.ShowDialog()

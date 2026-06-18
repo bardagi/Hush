@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
     Invoke-Hush.ps1   (ENFORCER)
 
@@ -22,13 +22,13 @@ $ErrorActionPreference = 'Stop'
 $allResults = New-Object System.Collections.Generic.List[object]
 
 try {
-    $paths      = Get-HushPaths
-    $config     = Get-HushConfig
+    $paths = Get-HushPaths
+    $config = Get-HushConfig
     if (-not $config) { throw "Config not found at $($paths.Config)" }
     $enabledDoc = Read-HushJson -Path $paths.Enabled
-    $enabled    = @(); if ($enabledDoc -and $enabledDoc.enabled) { $enabled = @($enabledDoc.enabled) }
+    $enabled = @(); if ($enabledDoc -and $enabledDoc.enabled) { $enabled = @($enabledDoc.enabled) }
     $exclusions = Read-HushJson -Path $paths.Exclusions
-    $state      = Read-HushJson -Path $paths.State
+    $state = Read-HushJson -Path $paths.State
     if (-not $state) { $state = [pscustomobject]@{} }
 
     # --- Snooze / quiet-hours gate (preview bypasses so you can always see the plan) ---
@@ -52,7 +52,7 @@ try {
         throw 'No cached catalog yet (fetcher has not produced a verified manifest). Skipping.'
     }
     $manifestBytes = [System.IO.File]::ReadAllBytes($paths.ManifestCache)
-    $sigBytes      = [System.IO.File]::ReadAllBytes($paths.ManifestSigCache)
+    $sigBytes = [System.IO.File]::ReadAllBytes($paths.ManifestSigCache)
     if (-not (Test-HushSignature -Data $manifestBytes -Signature $sigBytes -PublicKeyXml $config.publicKeyXml)) {
         throw 'Cached manifest signature INVALID — refusing to apply anything.'
     }
@@ -66,8 +66,8 @@ try {
     }
     if (-not $lastFetch) { $lastFetch = (Get-Item $paths.ManifestCache).LastWriteTimeUtc }
     $ageHours = ([datetime]::UtcNow - $lastFetch).TotalHours
-    $maxAge   = if (Test-HushProp $config 'maxDefinitionAgeHours') { [double]$config.maxDefinitionAgeHours } else { 72 }
-    $stale    = $ageHours -gt $maxAge
+    $maxAge = if (Test-HushProp $config 'maxDefinitionAgeHours') { [double]$config.maxDefinitionAgeHours } else { 72 }
+    $stale = $ageHours -gt $maxAge
     if ($stale) {
         Write-HushLog -Level Warning -Component 'enforce' -Message ("Definitions are STALE: last verified fetch {0:N1}h ago (> {1}h)." -f $ageHours, $maxAge)
     }
@@ -85,8 +85,8 @@ try {
             Write-HushLog -Level Warning -Component 'enforce' -Message "Enabled '$name' is not in the signed catalog — ignored."
             continue
         }
-        $entry     = $byName[$name]
-        $defPath   = Join-Path $paths.Cache $entry.file
+        $entry = $byName[$name]
+        $defPath = Join-Path $paths.Cache $entry.file
         if (-not (Test-Path $defPath)) {
             Write-HushLog -Level Warning -Component 'enforce' -Message "'$name' not cached yet — will apply after next fetch."
             continue
@@ -115,7 +115,7 @@ try {
                 $allResults.Add($r)
                 $msg = "[$name] $($r.Type) $($r.Target): $($r.Status) — $($r.Detail)"
                 if ($r.Status -eq 'Error') { Write-HushLog -Level Error -Component 'enforce' -Message $msg }
-                elseif ($r.Status -in @('Blocked','Excluded')) { Write-HushLog -Level Warning -Component 'enforce' -Message $msg }
+                elseif ($r.Status -in @('Blocked', 'Excluded')) { Write-HushLog -Level Warning -Component 'enforce' -Message $msg }
                 else { Write-HushLog -Component 'enforce' -Message $msg }
             }
         }
@@ -124,9 +124,9 @@ try {
 
     # --- Persist state (skip in preview so dry-runs are side-effect free) ---
     if (-not $Preview) {
-        $appl    = @($allResults | Where-Object { $_.Status -eq 'Applied' }).Count
-        $errs    = @($allResults | Where-Object { $_.Status -eq 'Error' }).Count
-        $blocked = @($allResults | Where-Object { $_.Status -in @('Blocked','Excluded') }).Count
+        $appl = @($allResults | Where-Object { $_.Status -eq 'Applied' }).Count
+        $errs = @($allResults | Where-Object { $_.Status -eq 'Error' }).Count
+        $blocked = @($allResults | Where-Object { $_.Status -in @('Blocked', 'Excluded') }).Count
         $state | Add-Member appliedVersions ([pscustomobject]$applied) -Force
         $state | Add-Member staleDefinitions ([bool]$stale) -Force
         $state | Add-Member lastEnforceUtc ([datetime]::UtcNow.ToString('o')) -Force
@@ -138,8 +138,7 @@ try {
     # Emit results so callers (the GUI Preview button) can display them.
     $allResults
     exit 0
-}
-catch {
+} catch {
     Write-HushLog -Level Error -Component 'enforce' -Message "Enforce aborted: $($_.Exception.Message)"
     $allResults
     exit 1

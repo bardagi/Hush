@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 #Requires -RunAsAdministrator
 <#
     Install-Hush.ps1   — run once per machine, elevated.
@@ -25,7 +25,7 @@ param(
     [int]$IntervalMinutes = 15,
     [int]$MaxDefinitionAgeHours = 72,
     [string[]]$EnabledDefinitions = @(),
-    [string[]]$ProtectedServices = @('WinDefend','Sense','wuauserv')
+    [string[]]$ProtectedServices = @('WinDefend', 'Sense', 'wuauserv')
 )
 
 Set-StrictMode -Version Latest
@@ -35,19 +35,19 @@ if (-not $PublicKeyXml -and -not $PublicKeyPath) { throw 'Provide -PublicKeyXml 
 if ($PublicKeyPath) { $PublicKeyXml = Get-Content -Path $PublicKeyPath -Raw }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$srcDir   = Join-Path $repoRoot 'src'
-$guiDir   = Join-Path $repoRoot 'gui'
+$srcDir = Join-Path $repoRoot 'src'
+$guiDir = Join-Path $repoRoot 'gui'
 
-$root    = Join-Path $env:ProgramData 'Hush'
-$bin     = Join-Path $root 'bin'
-$cache   = Join-Path $root 'cache'
-$logs    = Join-Path $root 'logs'
+$root = Join-Path $env:ProgramData 'Hush'
+$bin = Join-Path $root 'bin'
+$cache = Join-Path $root 'cache'
+$logs = Join-Path $root 'logs'
 $backups = Join-Path $root 'backups'
 
 Write-Host "Installing Hush to $root ..." -ForegroundColor Cyan
 
 # 1) Folders
-foreach ($d in @($root,$bin,$cache,$logs,$backups)) {
+foreach ($d in @($root, $bin, $cache, $logs, $backups)) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
 }
 
@@ -68,16 +68,16 @@ $config | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $root 'config.j
 
 # 4) Seed state files if absent (don't clobber on re-install)
 $enabledPath = Join-Path $root 'enabled.json'
-$exclPath    = Join-Path $root 'exclusions.json'
-$statePath   = Join-Path $root 'state.json'
+$exclPath = Join-Path $root 'exclusions.json'
+$statePath = Join-Path $root 'state.json'
 if (-not (Test-Path $enabledPath)) {
     [pscustomobject]@{ enabled = $EnabledDefinitions } | ConvertTo-Json | Set-Content $enabledPath -Encoding UTF8
 }
 if (-not (Test-Path $exclPath)) {
-    [pscustomobject]@{ processes=@(); services=@(); autostarts=@() } | ConvertTo-Json | Set-Content $exclPath -Encoding UTF8
+    [pscustomobject]@{ processes = @(); services = @(); autostarts = @() } | ConvertTo-Json | Set-Content $exclPath -Encoding UTF8
 }
 if (-not (Test-Path $statePath)) {
-    [pscustomobject]@{ snoozeUntil=$null; quietHours=@(); appliedVersions=@{}; lastFetchUtc=$null; lastEnforceUtc=$null } |
+    [pscustomobject]@{ snoozeUntil = $null; quietHours = @(); appliedVersions = @{}; lastFetchUtc = $null; lastEnforceUtc = $null } |
         ConvertTo-Json | Set-Content $statePath -Encoding UTF8
 }
 
@@ -99,7 +99,7 @@ $ps = Join-Path $PSHOME 'powershell.exe'
 function New-HushRepeatingTriggers {
     param([int]$OffsetMinutes)
     $rep = New-ScheduledTaskTrigger -Once -At ((Get-Date).Date.AddMinutes($OffsetMinutes)) `
-            -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
+        -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
     @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn), $rep)
 }
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
@@ -120,10 +120,10 @@ Register-ScheduledTask -TaskName 'Hush-Enforce' -Force -Description 'Hush: apply
 $shortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Hush Settings.lnk'
 $wsh = New-Object -ComObject WScript.Shell
 $lnk = $wsh.CreateShortcut($shortcut)
-$lnk.TargetPath   = $ps
-$lnk.Arguments    = "-NoProfile -ExecutionPolicy Bypass -File `"$bin\Hush-Settings.ps1`""
+$lnk.TargetPath = $ps
+$lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$bin\Hush-Settings.ps1`""
 $lnk.IconLocation = "$ps,0"
-$lnk.Description   = 'Choose what Hush closes in the background'
+$lnk.Description = 'Choose what Hush closes in the background'
 $lnk.Save()
 
 # 9) Prime the cache (best-effort — needs a real repo URL + key configured)

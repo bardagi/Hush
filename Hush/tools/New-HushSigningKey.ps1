@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
     New-HushSigningKey.ps1 — one-time keypair generator for the operator.
 
@@ -16,7 +16,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
-$pubPath  = Join-Path $OutDir 'hush-public.xml'
+$pubPath = Join-Path $OutDir 'hush-public.xml'
 $privPath = Join-Path $OutDir 'hush-private.xml'
 
 $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider 2048
