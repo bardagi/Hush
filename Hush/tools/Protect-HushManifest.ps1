@@ -25,6 +25,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Reuse the same validation the clients enforce, so we can never sign a catalog the fetcher
+# or enforcer would reject (bad filename / unsafe field / disallowed registry key, etc.).
+. (Join-Path (Split-Path -Parent $PSScriptRoot) 'src\Hush.Common.ps1')
+
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 function Write-Utf8NoBom([string]$Path, [string]$Text) { [System.IO.File]::WriteAllText($Path, $Text, $utf8NoBom) }
 function Get-Sha256Hex([byte[]]$Bytes) {
@@ -38,11 +42,14 @@ $sigPath = "$manifestPath.sig"
 
 $defs = @()
 foreach ($file in (Get-ChildItem -Path $DefinitionsDir -Filter *.json | Where-Object { $_.Name -ne 'manifest.json' })) {
+    if (-not (Test-HushSafeCacheFileName $file.Name)) { throw "$($file.Name): unsafe definition file name (must be a bare *.json)" }
     $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
     $def = [System.Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF) | ConvertFrom-Json
     foreach ($f in @('name', 'displayName', 'definitionVersion', 'updateDate', 'description')) {
         if ($null -eq $def.PSObject.Properties[$f]) { throw "$($file.Name): missing required field '$f'" }
     }
+    $schemaResult = Test-HushDefinition -Def $def
+    if (-not $schemaResult.Ok) { throw "$($file.Name): schema/guardrail invalid — $($schemaResult.Errors -join '; ')" }
     $defs += [pscustomobject]@{
         name              = $def.name
         displayName       = $def.displayName

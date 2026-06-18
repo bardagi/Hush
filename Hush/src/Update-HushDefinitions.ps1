@@ -59,6 +59,13 @@ try {
     # 2) Stage each definition: download, hash-check, anti-rollback, schema-validate.
     $staged = @{}   # cacheFileName -> bytes
     foreach ($entry in @($manifest.definitions)) {
+        # Validate the (signed) entry's own fields before they touch URLs, hashing or the
+        # filesystem — a bad 'file' must never reach Join-Path (path traversal).
+        $entryValid = Test-HushManifestEntry -Entry $entry
+        if (-not $entryValid.Ok) {
+            Write-HushLog -Level Warning -Component 'fetch' -Message "Manifest entry rejected — $($entryValid.Errors -join '; ') — skipped."
+            continue
+        }
         $defUrl = "$base/$($entry.file)"
         try {
             $defBytes = Get-HushUrlBytes -Url $defUrl

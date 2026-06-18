@@ -57,7 +57,17 @@ try {
         throw 'Cached manifest signature INVALID — refusing to apply anything.'
     }
     $manifest = [System.Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
-    $byName = @{}; foreach ($e in @($manifest.definitions)) { $byName[$e.name] = $e }
+    $byName = @{}
+    foreach ($e in @($manifest.definitions)) {
+        # Re-validate each entry's own fields (name/file/sha256) before they index the cache
+        # or feed Join-Path — the trust boundary versus the lower-privileged fetcher.
+        $entryValid = Test-HushManifestEntry -Entry $e
+        if (-not $entryValid.Ok) {
+            Write-HushLog -Level Warning -Component 'enforce' -Message "Manifest entry rejected — $($entryValid.Errors -join '; ') — ignored."
+            continue
+        }
+        $byName[$e.name] = $e
+    }
 
     # --- Stale-definition alert ---
     $lastFetch = $null

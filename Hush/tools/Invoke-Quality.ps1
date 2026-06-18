@@ -1,5 +1,6 @@
 ﻿#Requires -Version 5.1
 #Requires -Modules @{ ModuleName = 'PSScriptAnalyzer'; ModuleVersion = '1.25.0' }
+#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
 [CmdletBinding()]
 param([switch]$Fix)
@@ -47,6 +48,19 @@ foreach ($jsonFile in Get-ChildItem -Path $projectRoot -Recurse -File -Filter '*
 if ($failures.Count -gt 0) {
     $failures | ForEach-Object { Write-Error $_ -ErrorAction Continue }
     throw "Quality checks failed with $($failures.Count) issue(s)."
+}
+
+Write-Host 'Lint/format/JSON checks passed.' -ForegroundColor Green
+
+# --- Pester unit tests (validator + guardrails) ---
+$testsDir = Join-Path $projectRoot 'tests'
+if (Test-Path $testsDir) {
+    Import-Module Pester -MinimumVersion 5.0.0 -ErrorAction Stop
+    $pesterConfig = New-PesterConfiguration
+    $pesterConfig.Run.Path = $testsDir
+    $pesterConfig.Run.Throw = $true          # non-zero exit / throw on any failing test
+    $pesterConfig.Output.Verbosity = 'Detailed'
+    Invoke-Pester -Configuration $pesterConfig
 }
 
 Write-Host 'Quality checks passed.' -ForegroundColor Green

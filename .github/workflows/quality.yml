@@ -15,8 +15,10 @@ jobs:
 
       - name: Install development tools
         shell: pwsh
-        run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+          Install-Module Pester -MinimumVersion 5.0.0 -Scope CurrentUser -Force
 
-      - name: Run lint, static analysis, formatting, and JSON checks
+      - name: Run lint, static analysis, formatting, JSON, and unit tests
         shell: pwsh
         run: .\Hush\tools\Invoke-Quality.ps1
