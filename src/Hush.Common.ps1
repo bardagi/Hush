@@ -32,6 +32,7 @@ function Get-HushPaths {
         Enabled          = Join-Path $root 'enabled.json'
         Exclusions       = Join-Path $root 'exclusions.json'
         State            = Join-Path $root 'state.json'
+        FetchStatus      = Join-Path (Join-Path $root 'cache') 'fetch-status.json'
         LogFile          = Join-Path (Join-Path $root 'logs') 'hush.log'
         ManifestCache    = Join-Path (Join-Path $root 'cache') 'manifest.json'
         ManifestSigCache = Join-Path (Join-Path $root 'cache') 'manifest.json.sig'
@@ -130,20 +131,28 @@ function Get-HushFileSha256Hex {
 }
 
 function Test-HushSignature {
-    <# Verify an RSA PKCS#1 v1.5 / SHA-256 signature against a pinned public key (XML). #>
+    <#
+        Verify an RSA PKCS#1 v1.5 / SHA-256 signature against one or more pinned public keys
+        (XML). Returns true if ANY pinned key verifies. Accepting several keys enables
+        overlap-based key rotation — pin the new key alongside the old, re-sign with the new
+        private key, then later drop the old key — with no flag-day reinstall.
+    #>
     param(
         [Parameter(Mandatory)][byte[]]$Data,
         [Parameter(Mandatory)][byte[]]$Signature,
-        [Parameter(Mandatory)][string]$PublicKeyXml
+        [Parameter(Mandatory)]$PublicKeyXml
     )
-    $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
-    try {
-        $rsa.FromXmlString($PublicKeyXml)
-        return $rsa.VerifyData($Data, 'SHA256', $Signature)
-    } catch {
-        Write-HushLog -Level Error -Component 'Verify' -Message "Signature verification threw: $($_.Exception.Message)"
-        return $false
-    } finally { $rsa.Dispose() }
+    foreach ($keyXml in @($PublicKeyXml)) {
+        if ([string]::IsNullOrWhiteSpace([string]$keyXml)) { continue }
+        $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
+        try {
+            $rsa.FromXmlString([string]$keyXml)
+            if ($rsa.VerifyData($Data, 'SHA256', $Signature)) { return $true }
+        } catch {
+            Write-HushLog -Level Error -Component 'Verify' -Message "Signature verification threw: $($_.Exception.Message)"
+        } finally { $rsa.Dispose() }
+    }
+    return $false
 }
 
 # ----------------------------------------------------------------------------- input validation
@@ -681,9 +690,9 @@ function Invoke-HushRemoveAutostart {
     $scope = if (Test-HushProp $Action 'scope') { [string]$Action.scope } else { 'allUsers' }
     $results = @()
 
-    if (Test-HushExcluded -Type autostart -Name $pattern -Exclusions $Context.Exclusions) {
-        return , (New-HushResult 'removeAutostart' $pattern 'Excluded' 'local exclusion')
-    }
+    # Exclusions are tested against each RESOLVED entry name below (not the definition's
+    # pattern), so a local "never touch" list can spare an individual Run value / Startup
+    # file / scheduled task that the pattern would otherwise sweep.
 
     switch ($Action.kind) {
         'registryRun' {
@@ -691,6 +700,10 @@ function Invoke-HushRemoveAutostart {
                 $key = Get-Item -LiteralPath $keyPath -ErrorAction SilentlyContinue
                 if (-not $key) { continue }
                 foreach ($valName in @($key.GetValueNames() | Where-Object { $_ -like $pattern })) {
+                    if (Test-HushExcluded -Type autostart -Name $valName -Exclusions $Context.Exclusions) {
+                        $results += New-HushResult 'removeAutostart' "$keyPath\$valName" 'Excluded' 'local exclusion'
+                        continue
+                    }
                     if ($Context.Preview) {
                         $results += New-HushResult 'removeAutostart' "$keyPath\$valName" 'Preview' 'would remove Run value'
                         continue
@@ -711,6 +724,10 @@ function Invoke-HushRemoveAutostart {
         'startupFolder' {
             foreach ($folder in (Get-HushStartupFolders -Scope $scope)) {
                 foreach ($item in @(Get-ChildItem -LiteralPath $folder -ErrorAction SilentlyContinue | Where-Object { $_.Name -like $pattern })) {
+                    if (Test-HushExcluded -Type autostart -Name $item.Name -Exclusions $Context.Exclusions) {
+                        $results += New-HushResult 'removeAutostart' $item.FullName 'Excluded' 'local exclusion'
+                        continue
+                    }
                     if ($Context.Preview) {
                         $results += New-HushResult 'removeAutostart' $item.FullName 'Preview' 'would remove Startup item'
                         continue
@@ -730,6 +747,10 @@ function Invoke-HushRemoveAutostart {
             $disableOnly = ((Test-HushProp $Action 'disableOnly') -and $Action.disableOnly)
             foreach ($task in @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -like $pattern })) {
                 $full = "$($task.TaskPath)$($task.TaskName)"
+                if (Test-HushExcluded -Type autostart -Name $task.TaskName -Exclusions $Context.Exclusions) {
+                    $results += New-HushResult 'removeAutostart' $full 'Excluded' 'local exclusion'
+                    continue
+                }
                 if ($Context.Preview) {
                     $verb = if ($disableOnly) { 'would disable' } else { 'would unregister' }
                     $results += New-HushResult 'removeAutostart' $full 'Preview' "$verb scheduled task"

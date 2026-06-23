@@ -305,7 +305,10 @@ Update-BackupList
 # ----------------------------------------------------------------- Status
 function Update-StatusTab {
     $s = Get-State
-    $lf = if ((Test-HushProp $s 'lastFetchUtc') -and $s.lastFetchUtc) { (ConvertTo-HushUtc $s.lastFetchUtc).ToLocalTime() } else { 'never' }
+    # lastFetchUtc lives in the cache's fetch-status.json (written by the LOCAL SERVICE
+    # fetcher); everything else lives in state.json (written by the SYSTEM enforcer).
+    $fs = Read-HushJson -Path $paths.FetchStatus
+    $lf = if ((Test-HushProp $fs 'lastFetchUtc') -and $fs.lastFetchUtc) { (ConvertTo-HushUtc $fs.lastFetchUtc).ToLocalTime() } else { 'never' }
     $le = if ((Test-HushProp $s 'lastEnforceUtc') -and $s.lastEnforceUtc) { (ConvertTo-HushUtc $s.lastEnforceUtc).ToLocalTime() } else { 'never' }
     (C 'StLastFetch').Text = "Last definitions refresh: $lf"
     (C 'StLastEnforce').Text = "Last enforcement run: $le"

@@ -120,6 +120,22 @@ Requires only **Windows PowerShell 5.1** (built into Windows 10/11) — no modul
 Then open **Start Menu → Hush Settings** (it self-elevates) to choose which definitions to
 enforce, set exclusions, snooze, restore backups, or preview/run now.
 
+`-PublicKeyPath` / `-PublicKeyXml` accept **more than one** key — pass several to pin multiple
+public keys at once (see rotation below).
+
+## Rotating the signing key
+
+`Test-HushSignature` accepts several pinned keys and trusts a catalog if **any** of them
+verifies, so you can rotate without a flag-day:
+
+1. Generate a new keypair (`New-HushSigningKey.ps1`).
+2. Re-run `Install-Hush.ps1` pinning **both** keys:
+   `-PublicKeyPath .\hush-public-old.xml,.\hush-public-new.xml`.
+3. Once every machine trusts both, sign the catalog with the **new** private key
+   (`Protect-HushManifest.ps1 -PrivateKeyPath .\hush-private-new.xml`) and push.
+4. After the fleet has fetched at least once, re-run the installer pinning **only** the new
+   key to retire the old one.
+
 ## Authoring a definition
 
 A definition is declarative JSON. Required: `schemaVersion` (1), `name`, `displayName`,

@@ -57,6 +57,27 @@ try {
         throw 'Cached manifest signature INVALID — refusing to apply anything.'
     }
     $manifest = [System.Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
+    if (-not (Test-HushProp $manifest 'schemaVersion') -or $manifest.schemaVersion -ne 1) {
+        throw "Cached manifest schemaVersion unsupported — refusing to apply anything."
+    }
+
+    # --- Manifest-level anti-rollback ---
+    # Per-definition versions block downgrading a single definition; this blocks replaying a
+    # whole older (but still validly-signed) catalog, which could otherwise drop/withhold
+    # definitions. We record the highest manifest updateDate we've applied and refuse anything
+    # older. Missing/unparseable dates skip the check (the manifest is still signature-gated).
+    $manifestDate = $null
+    if ((Test-HushProp $manifest 'updateDate') -and $manifest.updateDate) {
+        try { $manifestDate = ConvertTo-HushUtc $manifest.updateDate } catch { }
+    }
+    $priorManifestDate = $null
+    if ((Test-HushProp $state 'manifestUpdateDate') -and $state.manifestUpdateDate) {
+        try { $priorManifestDate = ConvertTo-HushUtc $state.manifestUpdateDate } catch { }
+    }
+    if ($manifestDate -and $priorManifestDate -and ($manifestDate -lt $priorManifestDate)) {
+        throw "Cached manifest rollback blocked (updateDate $($manifestDate.ToString('o')) < last-applied $($priorManifestDate.ToString('o'))) — refusing to apply anything."
+    }
+
     $byName = @{}
     foreach ($e in @($manifest.definitions)) {
         # Re-validate each entry's own fields (name/file/sha256) before they index the cache
@@ -70,9 +91,12 @@ try {
     }
 
     # --- Stale-definition alert ---
+    # The fetcher records its last success in fetch-status.json (the cache dir it owns);
+    # fall back to the manifest cache mtime if that file is missing.
     $lastFetch = $null
-    if ((Test-HushProp $state 'lastFetchUtc') -and $state.lastFetchUtc) {
-        try { $lastFetch = ConvertTo-HushUtc $state.lastFetchUtc } catch { }
+    $fetchStatus = Read-HushJson -Path $paths.FetchStatus
+    if ((Test-HushProp $fetchStatus 'lastFetchUtc') -and $fetchStatus.lastFetchUtc) {
+        try { $lastFetch = ConvertTo-HushUtc $fetchStatus.lastFetchUtc } catch { }
     }
     if (-not $lastFetch) { $lastFetch = (Get-Item $paths.ManifestCache).LastWriteTimeUtc }
     $ageHours = ([datetime]::UtcNow - $lastFetch).TotalHours
@@ -138,6 +162,7 @@ try {
         $errs = @($allResults | Where-Object { $_.Status -eq 'Error' }).Count
         $blocked = @($allResults | Where-Object { $_.Status -in @('Blocked', 'Excluded') }).Count
         $state | Add-Member appliedVersions ([pscustomobject]$applied) -Force
+        if ($manifestDate) { $state | Add-Member manifestUpdateDate ($manifestDate.ToString('o')) -Force }
         $state | Add-Member staleDefinitions ([bool]$stale) -Force
         $state | Add-Member lastEnforceUtc ([datetime]::UtcNow.ToString('o')) -Force
         $state | Add-Member lastEnforceResult "applied=$appl errors=$errs blocked/excluded=$blocked" -Force

@@ -21,4 +21,28 @@ jobs:
 
       - name: Run lint, static analysis, formatting, JSON, and unit tests
         shell: pwsh
-        run: .\Hush\tools\Invoke-Quality.ps1
+        run: .\tools\Invoke-Quality.ps1
+
+  # The runtime targets Windows PowerShell 5.1 (built into Windows); the lint leg above runs
+  # under pwsh 7. This leg re-runs the test suite under 5.1 so a 5.1-only runtime regression
+  # is caught.
+  tests-windows-powershell-5_1:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester 5
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-Module Pester -MinimumVersion 5.0.0 -Scope CurrentUser -Force -SkipPublisherCheck
+
+      - name: Run Pester tests under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          Import-Module Pester -MinimumVersion 5.0.0
+          $config = New-PesterConfiguration
+          $config.Run.Path = 'tests'
+          $config.Run.Throw = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config

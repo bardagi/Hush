@@ -22,6 +22,9 @@ function Get-HushUrlBytes {
     $client = New-Object System.Net.Http.HttpClient($handler)
     try {
         $client.Timeout = [timespan]::FromSeconds(30)
+        # Cap the in-memory response so a hostile/MITM endpoint can't exhaust memory before
+        # the signature is even checked. Catalogs and definitions are tiny (a few KB).
+        $client.MaxResponseContentBufferSize = 5MB
         $client.DefaultRequestHeaders.UserAgent.ParseAdd('Hush/1.0')
         $resp = $client.GetAsync($Url).GetAwaiter().GetResult()
         if (-not $resp.IsSuccessStatusCode) { throw "HTTP $([int]$resp.StatusCode) fetching $Url" }
@@ -54,6 +57,9 @@ try {
     }
 
     $manifest = [System.Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
+    if (-not (Test-HushProp $manifest 'schemaVersion') -or $manifest.schemaVersion -ne 1) {
+        throw "Manifest schemaVersion unsupported ('$(if (Test-HushProp $manifest 'schemaVersion') { $manifest.schemaVersion } else { 'missing' })') — refusing to update cache."
+    }
     Write-HushLog -Component 'fetch' -Message "Catalog signature OK; $(@($manifest.definitions).Count) definition(s) listed."
 
     # 2) Stage each definition: download, hash-check, anti-rollback, schema-validate.
@@ -111,11 +117,13 @@ try {
         Move-Item -Path "$dest.new" -Destination $dest -Force
     }
 
-    # 4) Record the successful fetch time in state.json.
-    $state = Read-HushJson -Path $paths.State
-    if (-not $state) { $state = [pscustomobject]@{} }
-    $state | Add-Member -NotePropertyName 'lastFetchUtc' -NotePropertyValue ([datetime]::UtcNow.ToString('o')) -Force
-    Write-HushJsonAtomic -Path $paths.State -Object $state
+    # 4) Record the successful fetch time. The fetcher (LOCAL SERVICE) writes ONLY into the
+    #    cache directory it owns — it has no rights to create files in the install root, and
+    #    sharing state.json with the SYSTEM enforcer would race (lost updates). The enforcer
+    #    reads this for its staleness check and remains the sole writer of state.json.
+    Write-HushJsonAtomic -Path $paths.FetchStatus -Object ([pscustomobject]@{
+            lastFetchUtc = [datetime]::UtcNow.ToString('o')
+        })
 
     Write-HushLog -Component 'fetch' -Message "Fetch complete. $($staged.Count) definition(s) verified and cached."
     exit 0

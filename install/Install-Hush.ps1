@@ -19,8 +19,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$RepoRawBaseUrl,
-    [string]$PublicKeyXml,
-    [string]$PublicKeyPath,
+    [string[]]$PublicKeyXml,
+    [string[]]$PublicKeyPath,
     [string]$ManifestFile = 'manifest.json',
     [int]$IntervalMinutes = 15,
     [int]$MaxDefinitionAgeHours = 72,
@@ -31,8 +31,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if (-not $PublicKeyXml -and -not $PublicKeyPath) { throw 'Provide -PublicKeyXml or -PublicKeyPath (the pinned RSA public key).' }
-if ($PublicKeyPath) { $PublicKeyXml = Get-Content -Path $PublicKeyPath -Raw }
+# One or more pinned public keys may be supplied (pass several to enable overlap-based key
+# rotation: pin the new key alongside the old, re-sign with the new private key, then later
+# re-run the installer dropping the old key).
+$pinnedKeys = @()
+if ($PublicKeyXml) { $pinnedKeys += $PublicKeyXml }
+if ($PublicKeyPath) { foreach ($p in $PublicKeyPath) { $pinnedKeys += (Get-Content -Path $p -Raw) } }
+$pinnedKeys = @($pinnedKeys | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ($pinnedKeys.Count -eq 0) { throw 'Provide -PublicKeyXml or -PublicKeyPath (the pinned RSA public key).' }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $srcDir = Join-Path $repoRoot 'src'
@@ -59,7 +65,9 @@ Copy-Item -Path (Join-Path $guiDir 'Hush-Settings.ps1') -Destination $bin -Force
 $config = [pscustomobject]@{
     repoRawBaseUrl        = $RepoRawBaseUrl
     manifestFile          = $ManifestFile
-    publicKeyXml          = $PublicKeyXml.Trim()
+    # A single key is stored as a string (back-compat); multiple keys as an array. Test-HushSignature
+    # accepts either and verifies if ANY key matches.
+    publicKeyXml          = if ($pinnedKeys.Count -eq 1) { $pinnedKeys[0] } else { $pinnedKeys }
     intervalMinutes       = $IntervalMinutes
     maxDefinitionAgeHours = $MaxDefinitionAgeHours
     protectedServices     = $ProtectedServices
@@ -77,7 +85,7 @@ if (-not (Test-Path $exclPath)) {
     [pscustomobject]@{ processes = @(); services = @(); autostarts = @() } | ConvertTo-Json | Set-Content $exclPath -Encoding UTF8
 }
 if (-not (Test-Path $statePath)) {
-    [pscustomobject]@{ snoozeUntil = $null; quietHours = @(); appliedVersions = @{}; lastFetchUtc = $null; lastEnforceUtc = $null } |
+    [pscustomobject]@{ snoozeUntil = $null; quietHours = @(); appliedVersions = @{}; lastEnforceUtc = $null } |
         ConvertTo-Json | Set-Content $statePath -Encoding UTF8
 }
 
@@ -85,9 +93,10 @@ if (-not (Test-Path $statePath)) {
 Write-Host 'Hardening permissions ...' -ForegroundColor Cyan
 & icacls $root /inheritance:r /grant:r `
     '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' '*S-1-5-19:(OI)(CI)RX' | Out-Null
-# Fetcher (LOCAL SERVICE) needs to write the cache and update lastFetch in state.json.
+# Fetcher (LOCAL SERVICE) writes ONLY the cache (verified definitions + fetch-status.json).
+# It deliberately has no write access to the install root or state.json — the SYSTEM enforcer
+# owns state.json, so the network-facing component can never alter privileged state.
 & icacls $cache /grant:r '*S-1-5-19:(OI)(CI)M' | Out-Null
-& icacls $statePath /grant:r '*S-1-5-19:M' | Out-Null
 
 # 6) Event Log source
 if (-not [System.Diagnostics.EventLog]::SourceExists('Hush')) {
