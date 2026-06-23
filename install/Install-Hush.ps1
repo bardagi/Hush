@@ -104,7 +104,20 @@ if (-not [System.Diagnostics.EventLog]::SourceExists('Hush')) {
 }
 
 # 7) Scheduled tasks
-$ps = Join-Path $PSHOME 'powershell.exe'
+function Resolve-HushWindowsPowerShell {
+    $candidates = @()
+    if ($env:windir) {
+        $candidates += (Join-Path $env:windir 'Sysnative\WindowsPowerShell\v1.0\powershell.exe')
+        $candidates += (Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe')
+    }
+    $cmd = Get-Command 'powershell.exe' -ErrorAction SilentlyContinue
+    if ($cmd) { $candidates += $cmd.Source }
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    throw 'Could not find Windows PowerShell (powershell.exe) for scheduled tasks.'
+}
+$ps = Resolve-HushWindowsPowerShell
 function New-HushRepeatingTriggers {
     param([int]$OffsetMinutes)
     $rep = New-ScheduledTaskTrigger -Once -At ((Get-Date).Date.AddMinutes($OffsetMinutes)) `

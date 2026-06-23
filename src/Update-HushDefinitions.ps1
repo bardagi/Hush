@@ -63,13 +63,17 @@ try {
     Write-HushLog -Component 'fetch' -Message "Catalog signature OK; $(@($manifest.definitions).Count) definition(s) listed."
 
     # 2) Stage each definition: download, hash-check, anti-rollback, schema-validate.
+    # Any failure aborts the whole fetch so the signed manifest cache never points at
+    # missing, stale, or hash-mismatched definition files.
     $staged = @{}   # cacheFileName -> bytes
+    $stageFailures = New-Object System.Collections.Generic.List[string]
     foreach ($entry in @($manifest.definitions)) {
         # Validate the (signed) entry's own fields before they touch URLs, hashing or the
         # filesystem — a bad 'file' must never reach Join-Path (path traversal).
         $entryValid = Test-HushManifestEntry -Entry $entry
         if (-not $entryValid.Ok) {
             Write-HushLog -Level Warning -Component 'fetch' -Message "Manifest entry rejected — $($entryValid.Errors -join '; ') — skipped."
+            $stageFailures.Add("manifest entry rejected: $($entryValid.Errors -join '; ')")
             continue
         }
         $defUrl = "$base/$($entry.file)"
@@ -78,6 +82,7 @@ try {
             $hash = Get-HushSha256Hex -Bytes $defBytes
             if ($hash -ne $entry.sha256.ToLowerInvariant()) {
                 Write-HushLog -Level Warning -Component 'fetch' -Message "$($entry.name): SHA-256 mismatch (manifest=$($entry.sha256), got=$hash) — skipped."
+                $stageFailures.Add("$($entry.name): SHA-256 mismatch")
                 continue
             }
             $def = [System.Text.Encoding]::UTF8.GetString($defBytes) | ConvertFrom-Json
@@ -85,6 +90,7 @@ try {
             $valid = Test-HushDefinition -Def $def
             if (-not $valid.Ok) {
                 Write-HushLog -Level Warning -Component 'fetch' -Message "$($entry.name): schema invalid — $($valid.Errors -join '; ') — skipped."
+                $stageFailures.Add("$($entry.name): schema invalid")
                 continue
             }
 
@@ -95,6 +101,7 @@ try {
                     $cached = Read-HushJson -Path $cachedPath
                     if ($cached -and ($def.definitionVersion -lt $cached.definitionVersion)) {
                         Write-HushLog -Level Warning -Component 'fetch' -Message "$($entry.name): rollback blocked (incoming v$($def.definitionVersion) < cached v$($cached.definitionVersion)) — skipped."
+                        $stageFailures.Add("$($entry.name): rollback blocked")
                         continue
                     }
                 } catch { }
@@ -102,7 +109,12 @@ try {
             $staged[$entry.file] = $defBytes
         } catch {
             Write-HushLog -Level Warning -Component 'fetch' -Message "$($entry.name): fetch error — $($_.Exception.Message) — skipped."
+            $stageFailures.Add("$($entry.name): fetch error")
         }
+    }
+
+    if ($stageFailures.Count -gt 0) {
+        throw "Fetch incomplete; keeping last-known-good cache. $($stageFailures.Count) definition(s) failed staging."
     }
 
     # 3) Commit atomically: manifest + signature first, then each staged definition.

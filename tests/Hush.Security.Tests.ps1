@@ -121,6 +121,74 @@ Describe 'Registry data type matching' {
     }
 }
 
+Describe 'Quiet-hours validator' {
+    It 'accepts strict HH:mm values' {
+        Test-HushQuietHourValue '00:00' | Should -BeTrue
+        Test-HushQuietHourValue '07:30' | Should -BeTrue
+        Test-HushQuietHourValue '23:59' | Should -BeTrue
+    }
+    It 'rejects loose or out-of-range values' {
+        Test-HushQuietHourValue '7:30' | Should -BeFalse
+        Test-HushQuietHourValue '24:00' | Should -BeFalse
+        Test-HushQuietHourValue '12:60' | Should -BeFalse
+        Test-HushQuietHourValue 'noon' | Should -BeFalse
+    }
+}
+
+Describe 'Backup restore validator' {
+    BeforeEach {
+        $script:OldHushRoot = $env:HUSH_ROOT
+        $script:BackupTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('hush-backup-test-' + [guid]::NewGuid().ToString('N'))
+        $env:HUSH_ROOT = $script:BackupTestRoot
+    }
+    AfterEach {
+        if ($script:OldHushRoot) { $env:HUSH_ROOT = $script:OldHushRoot }
+        else { Remove-Item Env:\HUSH_ROOT -ErrorAction SilentlyContinue }
+    }
+
+    It 'accepts a registry Run backup produced by Hush' {
+        $backupFile = Join-Path $script:BackupTestRoot 'backups\20260101-000000\backup.json'
+        $backup = [pscustomobject]@{
+            kind      = 'registryRun'
+            keyPath   = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+            valueName = 'AcmeUpdater'
+            valueKind = 'String'
+            valueData = 'C:\Program Files\Acme\updater.exe'
+        }
+        (Test-HushBackup -Backup $backup -BackupFile $backupFile).Ok | Should -BeTrue
+    }
+    It 'rejects backup files outside the Hush backup root' {
+        $backupFile = Join-Path ([System.IO.Path]::GetTempPath()) 'outside-backup.json'
+        $backup = [pscustomobject]@{
+            kind      = 'registryRun'
+            keyPath   = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+            valueName = 'AcmeUpdater'
+            valueKind = 'String'
+            valueData = 'x'
+        }
+        (Test-HushBackup -Backup $backup -BackupFile $backupFile).Ok | Should -BeFalse
+    }
+    It 'rejects startup-folder restores outside known Startup folders' {
+        $backupFile = Join-Path $script:BackupTestRoot 'backups\20260101-000000\backup.json'
+        $backup = [pscustomobject]@{
+            kind         = 'startupFolder'
+            originalPath = 'C:\Windows\System32\evil.lnk'
+            fileName     = 'evil.lnk'
+        }
+        (Test-HushBackup -Backup $backup -BackupFile $backupFile).Ok | Should -BeFalse
+    }
+    It 'rejects scheduled task path traversal' {
+        $backupFile = Join-Path $script:BackupTestRoot 'backups\20260101-000000\backup.json'
+        $backup = [pscustomobject]@{
+            kind     = 'scheduledTask'
+            taskName = 'AcmeUpdater'
+            taskPath = '\..\'
+            xml      = '<Task></Task>'
+        }
+        (Test-HushBackup -Backup $backup -BackupFile $backupFile).Ok | Should -BeFalse
+    }
+}
+
 Describe 'Protected process guardrail (canonicalises before compare)' {
     It 'blocks critical processes across case / extension / whitespace variants' {
         Test-HushProtectedProcess -Name 'lsass' | Should -BeTrue

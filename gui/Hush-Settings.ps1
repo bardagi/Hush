@@ -261,8 +261,14 @@ if ((Test-HushProp $st0 'quietHours') -and @($st0.quietHours).Count -gt 0) {
     (C 'QhStart').Text = $st0.quietHours[0].start; (C 'QhEnd').Text = $st0.quietHours[0].end
 }
 (C 'BtnQhSave').Add_Click({
+        $start = (C 'QhStart').Text.Trim()
+        $end = (C 'QhEnd').Text.Trim()
+        if (-not (Test-HushQuietHourValue $start) -or -not (Test-HushQuietHourValue $end)) {
+            [System.Windows.MessageBox]::Show('Use 24h HH:mm for quiet hours, for example 22:00 to 07:00.', 'Hush') | Out-Null
+            return
+        }
         $s = Get-State
-        $s | Add-Member quietHours @([pscustomobject]@{ start = (C 'QhStart').Text.Trim(); end = (C 'QhEnd').Text.Trim() }) -Force
+        $s | Add-Member quietHours @([pscustomobject]@{ start = $start; end = $end }) -Force
         Write-HushJsonAtomic -Path $paths.State -Object $s
         [System.Windows.MessageBox]::Show('Quiet hours saved.', 'Hush') | Out-Null
     })
@@ -280,6 +286,8 @@ function Update-BackupList {
     foreach ($f in (Get-ChildItem -Path $paths.Backups -Filter *.json -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
         try {
             $b = Read-HushJson -Path $f.FullName
+            $valid = Test-HushBackup -Backup $b -BackupFile $f.FullName
+            if (-not $valid.Ok) { continue }
             $target = switch ($b.kind) {
                 'registryRun' { "$($b.keyPath)\$($b.valueName)" }
                 'startupFolder' { $b.originalPath }

@@ -229,6 +229,18 @@ function Test-HushSafeAutostartPattern {
     return ($Value -match '^[A-Za-z0-9 ._+()\-*?]+$')
 }
 
+function Test-HushSafeBackupFileName {
+    # A restored Startup item filename: exact filename only, never a path or wildcard.
+    param($Value)
+    return (Test-HushSafeString -Value $Value -Pattern '^[A-Za-z0-9 ._+()\-]+$') -and ($Value -notmatch '[\\/:]') -and ($Value -notmatch '\.\.')
+}
+
+function Test-HushQuietHourValue {
+    # GUI/enforcer quiet-hours format: strict 24h HH:mm.
+    param($Value)
+    return ($Value -is [string]) -and ($Value -match '^([01][0-9]|2[0-3]):[0-5][0-9]$')
+}
+
 function Test-HushSafeRegistryPath {
     # Sub-key path under a hive: backslash-separated, no wildcards, no drive/hive injection,
     # no '.'/'..' segments, safe charset per segment.
@@ -243,6 +255,127 @@ function Test-HushSafeRegistryPath {
         if ($seg -notmatch '^[A-Za-z0-9 ._+()\-]+$') { return $false }
     }
     return $true
+}
+
+function Test-HushBackupPathUnderRoot {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Root)
+    if ([string]::IsNullOrWhiteSpace($Path) -or [string]::IsNullOrWhiteSpace($Root)) { return $false }
+    if ((Test-HushHasUnsafeChar $Path) -or (Test-HushHasUnsafeChar $Root)) { return $false }
+    try {
+        $full = [System.IO.Path]::GetFullPath($Path)
+        $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+        return $full.Equals($rootFull, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $full.StartsWith("$rootFull\", [System.StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
+}
+
+function Test-HushRunKeyBackupPath {
+    param($Value)
+    if ($Value -isnot [string] -or $Value.Length -eq 0) { return $false }
+    if (Test-HushHasUnsafeChar $Value) { return $false }
+    $machine = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
+        'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Run',
+        'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\RunOnce'
+    )
+    if ($machine -contains $Value) { return $true }
+    return ($Value -match '^Registry::HKEY_USERS\\S-1-5-21-[0-9-]+\\Software\\Microsoft\\Windows\\CurrentVersion\\Run(Once)?$')
+}
+
+function Test-HushStartupBackupPath {
+    param($Value)
+    if ($Value -isnot [string] -or $Value.Length -eq 0) { return $false }
+    if ((Test-HushHasUnsafeChar $Value) -or (Test-HushHasWildcard $Value)) { return $false }
+    $leaf = Split-Path -Leaf $Value
+    if (-not (Test-HushSafeBackupFileName $leaf)) { return $false }
+    $parent = Split-Path -Parent $Value
+    foreach ($folder in (Get-HushStartupFolders -Scope 'allUsers')) {
+        try {
+            if ([System.IO.Path]::GetFullPath($parent).TrimEnd('\', '/').Equals(
+                    [System.IO.Path]::GetFullPath($folder).TrimEnd('\', '/'),
+                    [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        } catch { }
+    }
+    return $false
+}
+
+function Test-HushScheduledTaskPath {
+    param($Value)
+    if ($Value -isnot [string] -or $Value.Length -eq 0) { return $false }
+    if ($Value -ne $Value.Trim()) { return $false }
+    if ((Test-HushHasUnsafeChar $Value) -or (Test-HushHasWildcard $Value)) { return $false }
+    if ($Value -match '[:/]' -or $Value -notmatch '^\\.*\\$') { return $false }
+    foreach ($seg in ($Value.Trim('\') -split '\\')) {
+        if ($seg.Length -eq 0) { continue }
+        if ($seg -eq '.' -or $seg -eq '..') { return $false }
+        if ($seg -notmatch '^[A-Za-z0-9 ._+()\-]+$') { return $false }
+    }
+    return $true
+}
+
+function Test-HushBackup {
+    <# Validate a backup document before restore. Returns @{ Ok = [bool]; Errors = @() } #>
+    param([Parameter(Mandatory)]$Backup, [string]$BackupFile)
+    $errors = New-Object System.Collections.Generic.List[string]
+
+    function Has($obj, $name) { Test-HushProp $obj $name }
+
+    if ($BackupFile -and -not (Test-HushBackupPathUnderRoot -Path $BackupFile -Root (Get-HushPaths).Backups)) {
+        $errors.Add('backup file is outside the Hush backup root')
+    }
+    if (-not (Has $Backup 'kind')) {
+        $errors.Add('missing kind')
+    } else {
+        switch ($Backup.kind) {
+            'registryRun' {
+                foreach ($f in @('keyPath', 'valueName', 'valueKind', 'valueData')) {
+                    if (-not (Has $Backup $f)) { $errors.Add("missing $f") }
+                }
+                if ((Has $Backup 'keyPath') -and -not (Test-HushRunKeyBackupPath $Backup.keyPath)) { $errors.Add('registry Run key path invalid') }
+                if ((Has $Backup 'valueName') -and -not (Test-HushSafeString $Backup.valueName)) { $errors.Add('registry value name invalid') }
+                if ((Has $Backup 'valueKind') -and $script:HushRegValueTypes -notcontains $Backup.valueKind) { $errors.Add('registry value kind invalid') }
+                if ((Has $Backup 'valueKind') -and (Has $Backup 'valueData') -and
+                    ($script:HushRegValueTypes -contains $Backup.valueKind) -and
+                    -not (Test-HushRegistryData -ValueType $Backup.valueKind -Data $Backup.valueData)) {
+                    $errors.Add('registry value data does not match value kind')
+                }
+            }
+            'startupFolder' {
+                foreach ($f in @('originalPath', 'fileName')) {
+                    if (-not (Has $Backup $f)) { $errors.Add("missing $f") }
+                }
+                if ((Has $Backup 'fileName') -and -not (Test-HushSafeBackupFileName $Backup.fileName)) { $errors.Add('startup filename invalid') }
+                if ((Has $Backup 'originalPath') -and -not (Test-HushStartupBackupPath $Backup.originalPath)) { $errors.Add('startup original path invalid') }
+                if ((Has $Backup 'originalPath') -and (Has $Backup 'fileName') -and
+                    ((Split-Path -Leaf $Backup.originalPath) -ne $Backup.fileName)) {
+                    $errors.Add('startup filename does not match original path')
+                }
+            }
+            'scheduledTask' {
+                foreach ($f in @('taskName', 'taskPath', 'xml')) {
+                    if (-not (Has $Backup $f)) { $errors.Add("missing $f") }
+                }
+                if ((Has $Backup 'taskName') -and -not (Test-HushSafeString -Value $Backup.taskName -Pattern '^[A-Za-z0-9 ._+()\-]+$')) { $errors.Add('task name invalid') }
+                if ((Has $Backup 'taskPath') -and -not (Test-HushScheduledTaskPath $Backup.taskPath)) { $errors.Add('task path invalid') }
+                if (Has $Backup 'xml') {
+                    if ($Backup.xml -isnot [string] -or [string]::IsNullOrWhiteSpace($Backup.xml)) {
+                        $errors.Add('task xml invalid')
+                    } else {
+                        try {
+                            [xml]$taskXml = $Backup.xml
+                            if ($taskXml.DocumentElement.LocalName -ne 'Task') { $errors.Add('task xml root invalid') }
+                        } catch { $errors.Add('task xml invalid') }
+                    }
+                }
+            }
+            default { $errors.Add("unknown backup kind '$($Backup.kind)'") }
+        }
+    }
+
+    [pscustomobject]@{ Ok = ($errors.Count -eq 0); Errors = @($errors) }
 }
 
 function Test-HushRegistryData {
@@ -506,6 +639,7 @@ function Test-HushSnoozed {
         foreach ($w in @($State.quietHours)) {
             if (-not ((Test-HushProp $w 'start') -and (Test-HushProp $w 'end'))) { continue }
             try {
+                if (-not (Test-HushQuietHourValue $w.start) -or -not (Test-HushQuietHourValue $w.end)) { continue }
                 $s = [timespan]::Parse($w.start); $e = [timespan]::Parse($w.end)
                 $inWindow = if ($s -le $e) { ($now -ge $s -and $now -lt $e) } else { ($now -ge $s -or $now -lt $e) } # wrap past midnight
                 if ($inWindow) { return [pscustomobject]@{ Snoozed = $true; Reason = "quiet hours $($w.start)-$($w.end)" } }
@@ -824,9 +958,11 @@ function Restore-HushBackup {
     param([Parameter(Mandatory)][string]$BackupFile)
     $b = Read-HushJson -Path $BackupFile
     if (-not $b) { throw "Backup not found: $BackupFile" }
+    $valid = Test-HushBackup -Backup $b -BackupFile $BackupFile
+    if (-not $valid.Ok) { throw "Backup failed validation: $($valid.Errors -join '; ')" }
     switch ($b.kind) {
         'registryRun' {
-            if (-not (Test-Path $b.keyPath)) { New-Item -Path $b.keyPath -Force | Out-Null }
+            if (-not (Test-Path -LiteralPath $b.keyPath)) { New-Item -Path $b.keyPath -Force | Out-Null }
             Set-ItemProperty -LiteralPath $b.keyPath -Name $b.valueName -Value $b.valueData -Type $b.valueKind -Force
         }
         'startupFolder' {
