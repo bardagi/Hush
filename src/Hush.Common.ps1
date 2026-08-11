@@ -951,20 +951,20 @@ function Get-HushVisibleWindowPids {
         $outputPath = Join-Path $userTemp ('Hush-window-' + [guid]::NewGuid().ToString('N') + '.txt')
         try {
             $probeArguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $probePath, '-OutputPath', $outputPath)
-            $args = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -OutputPath "{1}"' -f $probePath, $outputPath
+            $probeCommandArgs = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -OutputPath "{1}"' -f $probePath, $outputPath
             $probeOk = if ($sameInteractiveSession) {
                 & $powershell.Source @probeArguments | Out-Null
                 ($LASTEXITCODE -eq 0)
             } else {
-                [HushSessionProbe]::RunProbe([int]$sessionId, $powershell.Source, $args, 15000)
+                [HushSessionProbe]::RunProbe([int]$sessionId, $powershell.Source, $probeCommandArgs, 15000)
             }
             if (-not $probeOk) { return $empty }
             if (-not (Test-Path -LiteralPath $outputPath)) { return $empty }
             foreach ($line in @(Get-Content -LiteralPath $outputPath -Encoding ASCII)) {
                 if ([string]::IsNullOrWhiteSpace($line)) { continue }
-                $pid = 0
-                if (-not [int]::TryParse($line, [ref]$pid) -or $pid -le 0) { return $empty }
-                [void]$visible.Add($pid)
+                $visibleProcessId = 0
+                if (-not [int]::TryParse($line, [ref]$visibleProcessId) -or $visibleProcessId -le 0) { return $empty }
+                [void]$visible.Add($visibleProcessId)
             }
         } catch {
             return $empty
