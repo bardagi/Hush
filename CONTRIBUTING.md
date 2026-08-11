@@ -2,12 +2,16 @@
 
 ## Quality checks
 
-Development requires
-[PSScriptAnalyzer 1.25.0](https://www.powershellgallery.com/packages/PSScriptAnalyzer/1.25.0).
-Install it once, then run the same checks used by CI:
+Development requires the exact tool versions CI pins:
+[PSScriptAnalyzer 1.25.0](https://www.powershellgallery.com/packages/PSScriptAnalyzer/1.25.0)
+and [Pester 5.8.0](https://www.powershellgallery.com/packages/Pester/5.8.0). Install both with
+the same script CI uses, then run the same checks CI runs:
 
 ```powershell
-Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser
+.\tools\ci\Install-CIModules.ps1 -Module @(
+    @{ Name = 'PSScriptAnalyzer'; RequiredVersion = '1.25.0' }
+    @{ Name = 'Pester'; RequiredVersion = '5.8.0' }
+)
 .\tools\Invoke-Quality.ps1
 ```
 

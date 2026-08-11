@@ -1,6 +1,6 @@
 ﻿#Requires -Version 5.1
 #Requires -Modules @{ ModuleName = 'PSScriptAnalyzer'; ModuleVersion = '1.25.0' }
-#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
+#Requires -Modules @{ ModuleName = 'Pester'; RequiredVersion = '5.8.0' }
 
 [CmdletBinding()]
 param([switch]$Fix)

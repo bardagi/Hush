@@ -3,44 +3,82 @@ name: Quality
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  lint:
+  lint-format-analyze:
+    name: Lint, format, static analysis & unit tests (PowerShell 7)
     runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Harden the runner (audit all outbound network calls)
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        with:
+          egress-policy: audit
 
-      - name: Install development tools
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Cache PowerShell 7 modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~\Documents\PowerShell\Modules
+          key: pwsh7-modules-PSScriptAnalyzer-1.25.0-Pester-5.8.0
+
+      - name: Install pinned PSScriptAnalyzer and Pester
         shell: pwsh
         run: |
-          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
-          Install-Module Pester -MinimumVersion 5.0.0 -Scope CurrentUser -Force
+          .\tools\ci\Install-CIModules.ps1 -Module @(
+              @{ Name = 'PSScriptAnalyzer'; RequiredVersion = '1.25.0' }
+              @{ Name = 'Pester'; RequiredVersion = '5.8.0' }
+          )
 
       - name: Run lint, static analysis, formatting, JSON, and unit tests
         shell: pwsh
         run: .\tools\Invoke-Quality.ps1
 
-  # The runtime targets Windows PowerShell 5.1 (built into Windows); the lint leg above runs
-  # under pwsh 7. This leg re-runs the test suite under 5.1 so a 5.1-only runtime regression
+  # The runtime targets Windows PowerShell 5.1 (built into Windows); the job above runs
+  # under pwsh 7. This job re-runs the test suite under 5.1 so a 5.1-only runtime regression
   # is caught.
-  tests-windows-powershell-5_1:
+  unit-tests-winps51:
+    name: Unit tests (Windows PowerShell 5.1 runtime)
     runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Harden the runner (audit all outbound network calls)
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        with:
+          egress-policy: audit
 
-      - name: Install Pester 5
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Cache Windows PowerShell 5.1 modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~\Documents\WindowsPowerShell\Modules
+          key: winps51-modules-Pester-5.8.0
+
+      - name: Install pinned Pester
         shell: powershell
         run: |
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          Install-Module Pester -MinimumVersion 5.0.0 -Scope CurrentUser -Force -SkipPublisherCheck
+          .\tools\ci\Install-CIModules.ps1 -Module @(@{ Name = 'Pester'; RequiredVersion = '5.8.0' })
 
       - name: Run Pester tests under Windows PowerShell 5.1
         shell: powershell
         run: |
-          Import-Module Pester -MinimumVersion 5.0.0
+          Import-Module Pester -RequiredVersion 5.8.0
           $config = New-PesterConfiguration
           $config.Run.Path = 'tests'
           $config.Run.Throw = $true
