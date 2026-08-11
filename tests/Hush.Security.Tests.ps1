@@ -284,6 +284,16 @@ Describe 'The shipped definitions still validate' {
         $def = Get-Content -LiteralPath (Join-Path $script:DefDir 'chrome-background.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         (Test-HushDefinition -Def $def).Ok | Should -BeTrue
     }
+    It 'chrome-background.json limits the Chrome kill to background processes' {
+        $def = Get-Content -LiteralPath (Join-Path $script:DefDir 'chrome-background.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $action = @($def.actions | Where-Object { $_.type -eq 'killProcess' -and (Test-HushProp $_ 'match') -and $_.match.name -ieq 'chrome.exe' })[0]
+        $action.backgroundOnly | Should -BeTrue
+    }
+    It 'rejects a legacy Chrome definition that can kill the browser' {
+        $def = New-HushTestDef @([pscustomobject]@{ type = 'killProcess'; match = [pscustomobject]@{ name = 'chrome.exe' } })
+        $def.name = 'chrome-background'
+        (Test-HushDefinition -Def $def).Ok | Should -BeFalse
+    }
     It 'adobe-background.json is valid' {
         $def = Get-Content -LiteralPath (Join-Path $script:DefDir 'adobe-background.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         (Test-HushDefinition -Def $def).Ok | Should -BeTrue

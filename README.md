@@ -123,8 +123,12 @@ compromised fetcher cannot make SYSTEM apply forged instructions.
   carry a signed expiry; an expired last-known-good catalog is retained but
   clearly reported until a fresh one is available.
 - **Non-overridable guardrails.** Hush refuses to kill critical OS
-  processes (lsass, csrss, winlogon, services, smss, …) or disable
-  protected services (Defender, etc.) even if a signed definition asks.
+  processes (lsass, csrss, winlogon, services, smss, …) or disable protected
+  services (Defender, etc.) even if a signed definition asks.
+- **Background-only actions.** A `killProcess` action can set
+  `backgroundOnly: true`. Hush then checks the relevant interactive user
+  session and skips the entire process tree if it owns a visible window. If
+  that check is unavailable, Hush fails closed and skips the process.
 - **Local exclusions.** A per-machine "never touch" list layered on top of
   the guardrails.
 - **Hardened install.** `C:\ProgramData\Hush` is writable only by
@@ -214,7 +218,7 @@ Action types:
 
 | type | required | notes |
 |------|----------|-------|
-| `killProcess`      | `match.name` | optional `match.company`/`match.path`, `killTree`, `optional` |
+| `killProcess`      | `match.name` | optional `match.company`/`match.path`, `killTree`, `backgroundOnly`, `optional` |
 | `stopService`      | `name` | `disable` also sets Startup=Disabled |
 | `removeAutostart`  | `kind`, `name` | `kind` = `registryRun` \| `startupFolder` \| `scheduledTask`; `scope`, `disableOnly`, `optional` |
 | `setRegistryValue` | `hive`,`path`,`name`,`valueType`,`data` | `hive` = HKLM \| HKCU; `path` must be under `SOFTWARE\Policies\` (guardrailed); `data` must match `valueType` |

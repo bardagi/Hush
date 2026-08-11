@@ -2,15 +2,16 @@
   "schemaVersion": 1,
   "name": "chrome-background",
   "displayName": "Chrome",
-  "definitionVersion": 1,
-  "updateDate": "2026-06-18T00:00:00Z",
+  "definitionVersion": 2,
+  "updateDate": "2026-08-12T00:00:00Z",
   "description": "Stop Google Chrome from running in the background.",
   "actions": [
     {
       "type": "killProcess",
       "match": { "name": "chrome.exe" },
       "killTree": true,
-      "comment": "Close all Chrome processes, including background tabs/apps living in the tray"
+      "backgroundOnly": true,
+      "comment": "Stop Chrome only when its process tree has no visible browser window"
     },
     {
       "type": "killProcess",

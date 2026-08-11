@@ -8,11 +8,11 @@
     {
       "name": "chrome-background",
       "displayName": "Chrome",
-      "definitionVersion": 1,
-      "updateDate": "2026-06-18T00:00:00Z",
+      "definitionVersion": 2,
+      "updateDate": "2026-08-12T00:00:00Z",
       "description": "Stop Google Chrome from running in the background.",
       "file": "chrome-background.json",
-      "sha256": "46d9f4bf33cbe0182edb93fab8ed93164e79e45387af8acf2e82e4f33c311739"
+      "sha256": "f57c716fe5046e9b5bbb53073d3582c0a5c529dab6a3bba62b877ddfdddf7b95"
     },
     {
       "name": "adobe-background",

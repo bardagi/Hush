@@ -166,6 +166,32 @@ Describe 'Action guardrails and per-entry exclusions (Preview)' {
         $ctx = [pscustomobject]@{ Preview = $true; Exclusions = $null; Config = $null }
         (Invoke-HushAction -Action $a -Context $ctx).Status | Should -Be 'Blocked'
     }
+    It 'skips a foreground process for a background-only action' {
+        Mock Get-CimInstance {
+            @([pscustomobject]@{ Name = 'chrome.exe'; ProcessId = 1234; ParentProcessId = 1; SessionId = 1 })
+        }
+        Mock Get-HushVisibleWindowPids {
+            [pscustomobject]@{ Available = $true; VisiblePids = @(1234) }
+        }
+        $a = [pscustomobject]@{ type = 'killProcess'; match = [pscustomobject]@{ name = 'chrome.exe' }; killTree = $true; backgroundOnly = $true }
+        $ctx = [pscustomobject]@{ Preview = $true; Exclusions = $null; Config = $null }
+        $result = Invoke-HushAction -Action $a -Context $ctx
+        $result.Status | Should -Be 'Skipped'
+        $result.Detail | Should -Be 'visible window in process tree'
+    }
+    It 'fails closed when a background-only window check is unavailable' {
+        Mock Get-CimInstance {
+            @([pscustomobject]@{ Name = 'chrome.exe'; ProcessId = 1234; ParentProcessId = 1; SessionId = 1 })
+        }
+        Mock Get-HushVisibleWindowPids {
+            [pscustomobject]@{ Available = $false; VisiblePids = @() }
+        }
+        $a = [pscustomobject]@{ type = 'killProcess'; match = [pscustomobject]@{ name = 'chrome.exe' }; backgroundOnly = $true }
+        $ctx = [pscustomobject]@{ Preview = $true; Exclusions = $null; Config = $null }
+        $result = Invoke-HushAction -Action $a -Context $ctx
+        $result.Status | Should -Be 'Skipped'
+        $result.Detail | Should -Be 'background-only check unavailable; fail-closed'
+    }
     It 'blocks a registry write outside the Policies allowlist at action time' {
         $a = [pscustomobject]@{ type = 'setRegistryValue'; hive = 'HKLM'; path = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Run'; name = 'x'; valueType = 'String'; data = 'cmd' }
         $ctx = [pscustomobject]@{ Preview = $true; Exclusions = $null; Config = $null }

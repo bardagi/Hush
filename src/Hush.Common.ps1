@@ -464,7 +464,7 @@ $script:HushAutostartScopes = @('allUsers', 'machine')
 $script:HushRegHives = @('HKLM', 'HKCU')
 $script:HushRegValueTypes = @('String', 'ExpandString', 'DWord', 'QWord', 'MultiString', 'Binary')
 # Known boolean flags — if present they must be real booleans (so disable:"false" can't be truthy).
-$script:HushBoolActionFields = @('killTree', 'optional', 'disable', 'disableOnly')
+$script:HushBoolActionFields = @('killTree', 'backgroundOnly', 'optional', 'disable', 'disableOnly')
 
 function Test-HushDefinition {
     <# Validate a parsed definition object. Returns @{ Ok = [bool]; Errors = @() } #>
@@ -501,11 +501,19 @@ function Test-HushDefinition {
                 foreach ($bf in $script:HushBoolActionFields) {
                     if ((Has $a $bf) -and ($a.$bf -isnot [bool])) { $errors.Add("action[$i] $bf must be a boolean") }
                 }
+                if ((Has $a 'backgroundOnly') -and $a.type -ne 'killProcess') {
+                    $errors.Add("action[$i] backgroundOnly is only valid for killProcess")
+                }
                 switch ($a.type) {
                     'killProcess' {
                         if (Has $a 'match') {
                             if (-not (Has $a.match 'name')) { $errors.Add("action[$i] match.name required") }
                             elseif (-not (Test-HushSafeProcessName $a.match.name)) { $errors.Add("action[$i] match.name is not a safe process name") }
+                            elseif ((Has $Def 'name') -and $Def.name -eq 'chrome-background' -and
+                                [string]$a.match.name -ieq 'chrome.exe' -and
+                                (-not (Has $a 'backgroundOnly') -or -not $a.backgroundOnly)) {
+                                $errors.Add("action[$i] chrome.exe must set backgroundOnly=true")
+                            }
                             # company/path are -like narrowing filters: must be strings (wildcards ok).
                             foreach ($opt in 'company', 'path') {
                                 if ((Has $a.match $opt) -and ($a.match.$opt -isnot [string])) { $errors.Add("action[$i] match.$opt must be a string") }
@@ -791,6 +799,184 @@ function Get-HushDescendantPids {
     }
 }
 
+function Initialize-HushSessionProbeType {
+    if ('HushSessionProbe' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class HushSessionProbe {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX;
+        public int dwY;
+        public int dwXSize;
+        public int dwYSize;
+        public int dwXCountChars;
+        public int dwYCountChars;
+        public int dwFillAttribute;
+        public int dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public int dwProcessId;
+        public int dwThreadId;
+    }
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSQueryUserToken(uint sessionId, out IntPtr token);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcessAsUser(
+        IntPtr token,
+        string applicationName,
+        StringBuilder commandLine,
+        IntPtr processAttributes,
+        IntPtr threadAttributes,
+        bool inheritHandles,
+        uint creationFlags,
+        IntPtr environment,
+        string currentDirectory,
+        ref STARTUPINFO startupInfo,
+        out PROCESS_INFORMATION processInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("userenv.dll", SetLastError = true)]
+    private static extern bool CreateEnvironmentBlock(out IntPtr environment, IntPtr token, bool inherit);
+
+    [DllImport("userenv.dll", SetLastError = true)]
+    private static extern bool DestroyEnvironmentBlock(IntPtr environment);
+
+    public static string GetUserTempPath(int sessionId) {
+        IntPtr token = IntPtr.Zero;
+        IntPtr environment = IntPtr.Zero;
+        try {
+            if (!WTSQueryUserToken((uint)sessionId, out token)) return null;
+            if (!CreateEnvironmentBlock(out environment, token, false)) return null;
+            IntPtr cursor = environment;
+            while (Marshal.ReadInt16(cursor) != 0) {
+                string entry = Marshal.PtrToStringUni(cursor);
+                if (entry.StartsWith("TEMP=", StringComparison.OrdinalIgnoreCase)) return entry.Substring(5);
+                cursor = IntPtr.Add(cursor, (entry.Length + 1) * 2);
+            }
+            return null;
+        } finally {
+            if (environment != IntPtr.Zero) DestroyEnvironmentBlock(environment);
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static bool RunProbe(int sessionId, string executable, string arguments, int timeoutMilliseconds) {
+        IntPtr token = IntPtr.Zero;
+        IntPtr environment = IntPtr.Zero;
+        PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
+        try {
+            if (!WTSQueryUserToken((uint)sessionId, out token)) return false;
+            if (!CreateEnvironmentBlock(out environment, token, false)) return false;
+
+            STARTUPINFO si = new STARTUPINFO();
+            si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            si.lpDesktop = "winsta0\\default";
+            string command = "\"" + executable.Replace("\"", "\\\"") + "\" " + arguments;
+            StringBuilder commandLine = new StringBuilder(command);
+            const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            if (!CreateProcessAsUser(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero,
+                    false, CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, environment, null, ref si, out pi)) return false;
+
+            uint waitResult = WaitForSingleObject(pi.hProcess, (uint)timeoutMilliseconds);
+            if (waitResult != 0) return false;
+            uint exitCode;
+            return GetExitCodeProcess(pi.hProcess, out exitCode) && exitCode == 0;
+        } finally {
+            if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
+            if (pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
+            if (environment != IntPtr.Zero) DestroyEnvironmentBlock(environment);
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+}
+'@
+}
+
+function Get-HushVisibleWindowPids {
+    param([Parameter(Mandatory)][int[]]$SessionIds)
+    $empty = [pscustomobject]@{ Available = $false; VisiblePids = @() }
+    $paths = Get-HushPaths
+    $probePath = Join-Path $paths.Bin 'Hush.WindowProbe.ps1'
+    if (-not (Test-Path -LiteralPath $probePath)) { return $empty }
+
+    $powershell = Get-Command 'powershell.exe' -ErrorAction SilentlyContinue
+    if (-not $powershell) { return $empty }
+    Initialize-HushSessionProbeType
+
+    $currentSessionId = -1
+    $currentIsSystem = $false
+    try {
+        $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+        $currentIsSystem = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq 'S-1-5-18')
+    } catch { }
+
+    $visible = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($sessionId in @($SessionIds | Where-Object { $_ -ge 0 } | Select-Object -Unique)) {
+        $sameInteractiveSession = ([int]$sessionId -eq $currentSessionId) -and -not $currentIsSystem
+        $userTemp = if ($sameInteractiveSession) {
+            [System.IO.Path]::GetTempPath()
+        } else {
+            [HushSessionProbe]::GetUserTempPath([int]$sessionId)
+        }
+        if ([string]::IsNullOrWhiteSpace($userTemp) -or -not (Test-Path -LiteralPath $userTemp)) { return $empty }
+        $outputPath = Join-Path $userTemp ('Hush-window-' + [guid]::NewGuid().ToString('N') + '.txt')
+        try {
+            $probeArguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $probePath, '-OutputPath', $outputPath)
+            $args = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -OutputPath "{1}"' -f $probePath, $outputPath
+            $probeOk = if ($sameInteractiveSession) {
+                & $powershell.Source @probeArguments | Out-Null
+                ($LASTEXITCODE -eq 0)
+            } else {
+                [HushSessionProbe]::RunProbe([int]$sessionId, $powershell.Source, $args, 15000)
+            }
+            if (-not $probeOk) { return $empty }
+            if (-not (Test-Path -LiteralPath $outputPath)) { return $empty }
+            foreach ($line in @(Get-Content -LiteralPath $outputPath -Encoding ASCII)) {
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                $pid = 0
+                if (-not [int]::TryParse($line, [ref]$pid) -or $pid -le 0) { return $empty }
+                [void]$visible.Add($pid)
+            }
+        } catch {
+            return $empty
+        } finally {
+            if (Test-Path -LiteralPath $outputPath) {
+                Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    return [pscustomobject]@{ Available = $true; VisiblePids = @($visible) }
+}
+
 function Invoke-HushKillProcess {
     param([Parameter(Mandatory)]$Action, [Parameter(Mandatory)]$Context)
     $name = [string]$Action.match.name
@@ -826,10 +1012,49 @@ function Invoke-HushKillProcess {
     $killTree = ((Test-HushProp $Action 'killTree') -and $Action.killTree)
     $allProcs = if ($killTree) { @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue) } else { @() }
 
+    $backgroundOnly = ((Test-HushProp $Action 'backgroundOnly') -and $Action.backgroundOnly)
+    $visibleTreePids = New-Object 'System.Collections.Generic.HashSet[int]'
+    $targetTreePids = @{}
+    if ($backgroundOnly) {
+        if (-not $killTree) { $allProcs = @($procs) }
+        $sessionIds = @($procs | ForEach-Object { $_.SessionId } | Select-Object -Unique)
+        if (@($sessionIds | Where-Object { $_ -ge 0 }).Count -eq 0) {
+            return , (New-HushResult 'killProcess' $name 'Skipped' 'background-only check unavailable; fail-closed')
+        }
+        $windowProbe = Get-HushVisibleWindowPids -SessionIds $sessionIds
+        if (-not $windowProbe.Available) {
+            return , (New-HushResult 'killProcess' $name 'Skipped' 'background-only check unavailable; fail-closed')
+        }
+
+        foreach ($proc in $procs) {
+            $treePids = @($proc.ProcessId)
+            if ($killTree) { $treePids += @(Get-HushDescendantPids -ParentId $proc.ProcessId -AllProcs $allProcs) }
+            $targetTreePids[[int]$proc.ProcessId] = @($treePids | Select-Object -Unique)
+        }
+
+        foreach ($visiblePid in @($windowProbe.VisiblePids)) {
+            foreach ($tree in @($targetTreePids.GetEnumerator())) {
+                $treePids = @($tree.Value)
+                if (@($treePids | Where-Object { [int]$_ -eq [int]$visiblePid }).Count -eq 0) { continue }
+                foreach ($treePid in $treePids) { [void]$visibleTreePids.Add([int]$treePid) }
+            }
+        }
+    }
+
     foreach ($proc in $procs) {
-        $pids = @($proc.ProcessId)
-        if ($killTree) { $pids += @(Get-HushDescendantPids -ParentId $proc.ProcessId -AllProcs $allProcs) }
-        $pids = @($pids | Select-Object -Unique)
+        $pids = if ($backgroundOnly) {
+            @($targetTreePids[[int]$proc.ProcessId])
+        } else {
+            $candidatePids = @($proc.ProcessId)
+            if ($killTree) { $candidatePids += @(Get-HushDescendantPids -ParentId $proc.ProcessId -AllProcs $allProcs) }
+            @($candidatePids | Select-Object -Unique)
+        }
+
+        if ($backgroundOnly -and @($pids | Where-Object { $visibleTreePids.Contains([int]$_) }).Count -gt 0) {
+            $results += New-HushResult 'killProcess' "$name (pid $($proc.ProcessId))" 'Skipped' 'visible window in process tree'
+            continue
+        }
+
         foreach ($procId in $pids) {
             $liveProc = Get-Process -Id $procId -ErrorAction SilentlyContinue
             if ($liveProc -and (Test-HushProtectedProcess -Name $liveProc.ProcessName)) { continue }
