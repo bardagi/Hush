@@ -41,8 +41,13 @@ try {
     $config = Get-HushConfig
     if (-not $config) { throw "Config not found at $($paths.Config)" }
     if (-not (Test-Path $paths.Cache)) { New-Item -ItemType Directory -Path $paths.Cache -Force | Out-Null }
+    if (-not (Test-Path $paths.Catalogs)) { New-Item -ItemType Directory -Path $paths.Catalogs -Force | Out-Null }
 
     $base = $config.repoRawBaseUrl.TrimEnd('/')
+    $baseUri = [uri]$base
+    if ($baseUri.Scheme -ne 'https' -or [string]::IsNullOrWhiteSpace($baseUri.Host)) {
+        throw "Catalog URL must use HTTPS (got '$base')."
+    }
     $manifestUrl = "$base/$($config.manifestFile)"
     $sigUrl = "$manifestUrl.sig"
 
@@ -57,16 +62,42 @@ try {
     }
 
     $manifest = [System.Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
-    if (-not (Test-HushProp $manifest 'schemaVersion') -or $manifest.schemaVersion -ne 1) {
-        throw "Manifest schemaVersion unsupported ('$(if (Test-HushProp $manifest 'schemaVersion') { $manifest.schemaVersion } else { 'missing' })') — refusing to update cache."
+    $manifestValid = Test-HushManifest -Manifest $manifest
+    if (-not $manifestValid.Ok) {
+        throw "Manifest validation failed — $($manifestValid.Errors -join '; ') — refusing to update cache."
     }
-    Write-HushLog -Component 'fetch' -Message "Catalog signature OK; $(@($manifest.definitions).Count) definition(s) listed."
+
+    # Reject replayed catalog metadata before downloading any definitions. A same-version
+    # catalog is accepted only when its exact signed bytes are unchanged.
+    $active = Get-HushCatalogFiles
+    if ($active) {
+        try {
+            $cachedManifest = Read-HushJson -Path $active.Manifest
+            $cachedVersion = if ((Test-HushProp $cachedManifest 'catalogVersion') -and
+                ($cachedManifest.catalogVersion -is [int] -or $cachedManifest.catalogVersion -is [long])) {
+                [int64]$cachedManifest.catalogVersion
+            } else { 0 }
+            if ($manifestValid.CatalogVersion -lt $cachedVersion) {
+                throw "Catalog rollback blocked (incoming v$($manifestValid.CatalogVersion) < cached v$cachedVersion)."
+            }
+            if ($manifestValid.CatalogVersion -eq $cachedVersion -and $cachedVersion -gt 0) {
+                $cachedBytes = [System.IO.File]::ReadAllBytes($active.Manifest)
+                if ((Get-HushSha256Hex -Bytes $cachedBytes) -ne (Get-HushSha256Hex -Bytes $manifestBytes)) {
+                    throw "Catalog version $cachedVersion was republished with different bytes."
+                }
+            }
+        } catch {
+            if ($_.Exception.Message -like 'Catalog *') { throw }
+        }
+    }
+    Write-HushLog -Component 'fetch' -Message "Catalog signature and metadata OK (v$($manifestValid.CatalogVersion)); $(@($manifest.definitions).Count) definition(s) listed."
 
     # 2) Stage each definition: download, hash-check, anti-rollback, schema-validate.
     # Any failure aborts the whole fetch so the signed manifest cache never points at
     # missing, stale, or hash-mismatched definition files.
     $staged = @{}   # cacheFileName -> bytes
     $stageFailures = New-Object System.Collections.Generic.List[string]
+    $activeRoot = if ($active) { $active.Root } else { $paths.Cache }
     foreach ($entry in @($manifest.definitions)) {
         # Validate the (signed) entry's own fields before they touch URLs, hashing or the
         # filesystem — a bad 'file' must never reach Join-Path (path traversal).
@@ -94,14 +125,26 @@ try {
                 continue
             }
 
+            if (-not (Test-HushManifestDefinitionMatch -Entry $entry -Definition $def)) {
+                Write-HushLog -Level Warning -Component 'fetch' -Message "$($entry.name): manifest metadata does not match definition — skipped."
+                $stageFailures.Add("$($entry.name): manifest metadata mismatch")
+                continue
+            }
+
             # Anti-rollback vs cached copy.
-            $cachedPath = Join-Path $paths.Cache $entry.file
+            $cachedPath = Join-Path $activeRoot $entry.file
             if (Test-Path $cachedPath) {
                 try {
                     $cached = Read-HushJson -Path $cachedPath
                     if ($cached -and ($def.definitionVersion -lt $cached.definitionVersion)) {
                         Write-HushLog -Level Warning -Component 'fetch' -Message "$($entry.name): rollback blocked (incoming v$($def.definitionVersion) < cached v$($cached.definitionVersion)) — skipped."
                         $stageFailures.Add("$($entry.name): rollback blocked")
+                        continue
+                    }
+                    if ($cached -and ($def.definitionVersion -eq $cached.definitionVersion) -and
+                        ((Get-HushFileSha256Hex -Path $cachedPath) -ne $entry.sha256.ToLowerInvariant())) {
+                        Write-HushLog -Level Warning -Component 'fetch' -Message "$($entry.name): same definitionVersion with different bytes — skipped. Bump definitionVersion for content changes."
+                        $stageFailures.Add("$($entry.name): same-version content change")
                         continue
                     }
                 } catch { }
@@ -117,16 +160,31 @@ try {
         throw "Fetch incomplete; keeping last-known-good cache. $($stageFailures.Count) definition(s) failed staging."
     }
 
-    # 3) Commit atomically: manifest + signature first, then each staged definition.
-    [System.IO.File]::WriteAllBytes("$($paths.ManifestCache).new", $manifestBytes)
-    Move-Item -Path "$($paths.ManifestCache).new" -Destination $paths.ManifestCache -Force
-    [System.IO.File]::WriteAllBytes("$($paths.ManifestSigCache).new", $sigBytes)
-    Move-Item -Path "$($paths.ManifestSigCache).new" -Destination $paths.ManifestSigCache -Force
-
+    # 3) Commit a complete immutable snapshot, then atomically switch the active pointer.
+    # SYSTEM can never observe a manifest whose definition files are only partly written.
+    $manifestHash = Get-HushSha256Hex -Bytes $manifestBytes
+    $snapshotName = '{0}-{1}' -f $manifestValid.CatalogVersion, $manifestHash.Substring(0, 16)
+    $snapshot = Join-Path $paths.Catalogs $snapshotName
+    if (Test-Path $snapshot) { Remove-Item -LiteralPath $snapshot -Recurse -Force }
+    New-Item -ItemType Directory -Path $snapshot -Force | Out-Null
+    [System.IO.File]::WriteAllBytes((Join-Path $snapshot 'manifest.json'), $manifestBytes)
+    [System.IO.File]::WriteAllBytes((Join-Path $snapshot 'manifest.json.sig'), $sigBytes)
     foreach ($file in $staged.Keys) {
-        $dest = Join-Path $paths.Cache $file
-        [System.IO.File]::WriteAllBytes("$dest.new", $staged[$file])
-        Move-Item -Path "$dest.new" -Destination $dest -Force
+        [System.IO.File]::WriteAllBytes((Join-Path $snapshot $file), $staged[$file])
+    }
+    Write-HushJsonAtomic -Path $paths.ActiveCatalog -Object ([pscustomobject]@{
+            catalogVersion = $manifestValid.CatalogVersion
+            directory      = $snapshotName
+            manifestSha256 = $manifestHash
+        })
+    # Keep a small rollback window without allowing unbounded catalog growth. The active
+    # snapshot is never selected for deletion, even if timestamps are unexpectedly equal.
+    $oldSnapshots = @(Get-ChildItem -LiteralPath $paths.Catalogs -Directory -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -Skip 3)
+    foreach ($old in $oldSnapshots) {
+        if ($old.Name -ne $snapshotName -and $old.Name -match '^[0-9]+-[0-9a-f]{16}$') {
+            Remove-Item -LiteralPath $old.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     # 4) Record the successful fetch time. The fetcher (LOCAL SERVICE) writes ONLY into the
@@ -137,7 +195,7 @@ try {
             lastFetchUtc = [datetime]::UtcNow.ToString('o')
         })
 
-    Write-HushLog -Component 'fetch' -Message "Fetch complete. $($staged.Count) definition(s) verified and cached."
+    Write-HushLog -Component 'fetch' -Message "Fetch complete. Catalog v$($manifestValid.CatalogVersion) with $($staged.Count) definition(s) verified and activated."
     exit 0
 } catch {
     Write-HushLog -Level Error -Component 'fetch' -Message "Fetch aborted: $($_.Exception.Message)"

@@ -42,13 +42,17 @@ $paths = Get-HushPaths
 # ----------------------------------------------------------------- helpers
 function Get-HushCatalog {
     # Returns verified catalog definitions, or $null if missing/invalid.
-    if (-not (Test-Path $paths.ManifestCache) -or -not (Test-Path $paths.ManifestSigCache)) { return $null }
     try {
         $config = Get-HushConfig
-        $mb = [System.IO.File]::ReadAllBytes($paths.ManifestCache)
-        $sb = [System.IO.File]::ReadAllBytes($paths.ManifestSigCache)
+        $catalog = Get-HushCatalogFiles
+        if (-not $catalog) { return $null }
+        $mb = [System.IO.File]::ReadAllBytes($catalog.Manifest)
+        $sb = [System.IO.File]::ReadAllBytes($catalog.ManifestSig)
         if (-not (Test-HushSignature -Data $mb -Signature $sb -PublicKeyXml $config.publicKeyXml)) { return $null }
-        return ([System.Text.Encoding]::UTF8.GetString($mb) | ConvertFrom-Json).definitions
+        $manifest = [System.Text.Encoding]::UTF8.GetString($mb) | ConvertFrom-Json
+        $valid = Test-HushManifest -Manifest $manifest -AllowExpired
+        if (-not $valid.Ok) { return $null }
+        return $manifest.definitions
     } catch { return $null }
 }
 

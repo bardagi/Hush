@@ -1,0 +1,4 @@
+# Never commit catalog signing material.
+hush-private*.xml
+hush-private*.xml.dpapi
+*.pfx

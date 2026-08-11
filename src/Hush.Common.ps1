@@ -28,6 +28,8 @@ function Get-HushPaths {
         Cache            = Join-Path $root 'cache'
         Logs             = Join-Path $root 'logs'
         Backups          = Join-Path $root 'backups'
+        Catalogs         = Join-Path (Join-Path $root 'cache') 'catalogs'
+        ActiveCatalog    = Join-Path (Join-Path $root 'cache') 'active-catalog.json'
         Config           = Join-Path $root 'config.json'
         Enabled          = Join-Path $root 'enabled.json'
         Exclusions       = Join-Path $root 'exclusions.json'
@@ -229,6 +231,44 @@ function Test-HushSafeAutostartPattern {
     return ($Value -match '^[A-Za-z0-9 ._+()\-*?]+$')
 }
 
+function Get-HushCatalogFiles {
+    <#
+        Resolve the currently active catalog snapshot. The fetcher switches snapshots by
+        atomically replacing active-catalog.json; the legacy cache paths remain a read-only
+        compatibility fallback for older installs and tests.
+    #>
+    $paths = Get-HushPaths
+    $root = $paths.Cache
+    if (Test-Path $paths.ActiveCatalog) {
+        try {
+            $pointer = Read-HushJson -Path $paths.ActiveCatalog
+            $directory = [string]$pointer.directory
+            if ($directory -match '^[0-9]+-[0-9a-f]{16}$') {
+                $snapshot = Join-Path $paths.Catalogs $directory
+                $manifest = Join-Path $snapshot 'manifest.json'
+                $signature = Join-Path $snapshot 'manifest.json.sig'
+                if ((Test-Path $manifest) -and (Test-Path $signature)) {
+                    return [pscustomobject]@{
+                        Root           = $snapshot
+                        Manifest       = $manifest
+                        ManifestSig    = $signature
+                        CatalogVersion = [int64]$pointer.catalogVersion
+                    }
+                }
+            }
+        } catch { }
+    }
+    if ((Test-Path $paths.ManifestCache) -and (Test-Path $paths.ManifestSigCache)) {
+        return [pscustomobject]@{
+            Root           = $root
+            Manifest       = $paths.ManifestCache
+            ManifestSig    = $paths.ManifestSigCache
+            CatalogVersion = 0
+        }
+    }
+    return $null
+}
+
 function Test-HushSafeBackupFileName {
     # A restored Startup item filename: exact filename only, never a path or wildcard.
     param($Value)
@@ -265,7 +305,7 @@ function Test-HushBackupPathUnderRoot {
         $full = [System.IO.Path]::GetFullPath($Path)
         $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
         return $full.Equals($rootFull, [System.StringComparison]::OrdinalIgnoreCase) -or
-            $full.StartsWith("$rootFull\", [System.StringComparison]::OrdinalIgnoreCase)
+        $full.StartsWith("$rootFull\", [System.StringComparison]::OrdinalIgnoreCase)
     } catch { return $false }
 }
 
@@ -516,12 +556,78 @@ function Test-HushManifestEntry {
     param([Parameter(Mandatory)]$Entry)
     $errors = New-Object System.Collections.Generic.List[string]
     if (-not (Test-HushProp $Entry 'name') -or -not (Test-HushSafeDefinitionName $Entry.name)) { $errors.Add('entry name invalid') }
+    if (-not (Test-HushProp $Entry 'displayName') -or $Entry.displayName -isnot [string] -or [string]::IsNullOrWhiteSpace($Entry.displayName)) { $errors.Add('entry displayName invalid') }
+    if (-not (Test-HushProp $Entry 'description') -or $Entry.description -isnot [string]) { $errors.Add('entry description invalid') }
     if (-not (Test-HushProp $Entry 'file') -or -not (Test-HushSafeCacheFileName $Entry.file)) { $errors.Add('entry file invalid') }
     if (-not (Test-HushProp $Entry 'sha256') -or -not (Test-HushSha256Hex $Entry.sha256)) { $errors.Add('entry sha256 invalid') }
     if ((Test-HushProp $Entry 'definitionVersion') -and -not ($Entry.definitionVersion -is [int] -or $Entry.definitionVersion -is [long])) {
         $errors.Add('entry definitionVersion must be an integer')
     }
+    if (-not (Test-HushProp $Entry 'definitionVersion')) { $errors.Add('entry definitionVersion missing') }
+    if (-not (Test-HushProp $Entry 'updateDate')) { $errors.Add('entry updateDate missing') }
+    else {
+        $entryDate = $null
+        try { $entryDate = ConvertTo-HushUtc $Entry.updateDate } catch { }
+        if (-not $entryDate) { $errors.Add('entry updateDate invalid') }
+    }
     [pscustomobject]@{ Ok = ($errors.Count -eq 0); Errors = @($errors) }
+}
+
+function Test-HushManifest {
+    <# Validate catalog metadata and entry structure. Expiry is optionally advisory for cached data. #>
+    param(
+        [Parameter(Mandatory)]$Manifest,
+        [switch]$AllowExpired
+    )
+    $errors = New-Object System.Collections.Generic.List[string]
+    if (-not (Test-HushProp $Manifest 'schemaVersion') -or $Manifest.schemaVersion -ne 2) {
+        $errors.Add('unsupported manifest schemaVersion')
+    }
+    if (-not (Test-HushProp $Manifest 'catalogVersion') -or
+        -not ($Manifest.catalogVersion -is [int] -or $Manifest.catalogVersion -is [long]) -or
+        $Manifest.catalogVersion -lt 1) {
+        $errors.Add('catalogVersion must be a positive integer')
+    }
+    $published = $null
+    $expires = $null
+    if (-not (Test-HushProp $Manifest 'publishedAt')) { $errors.Add('publishedAt missing') }
+    else { try { $published = ConvertTo-HushUtc $Manifest.publishedAt } catch { $errors.Add('publishedAt invalid') } }
+    if (-not (Test-HushProp $Manifest 'expiresAt')) { $errors.Add('expiresAt missing') }
+    else { try { $expires = ConvertTo-HushUtc $Manifest.expiresAt } catch { $errors.Add('expiresAt invalid') } }
+    if ($published -and $expires -and $expires -le $published) { $errors.Add('expiresAt must be after publishedAt') }
+    if ($expires -and -not $AllowExpired -and [datetime]::UtcNow -gt $expires) { $errors.Add('manifest expired') }
+    if (-not (Test-HushProp $Manifest 'definitions') -or $null -eq $Manifest.definitions -or
+        $Manifest.definitions -is [string]) {
+        $errors.Add('definitions must be an array')
+    } else {
+        $names = @{}
+        $files = @{}
+        foreach ($entry in @($Manifest.definitions)) {
+            $valid = Test-HushManifestEntry -Entry $entry
+            if (-not $valid.Ok) { $errors.Add(($valid.Errors -join '; ')); continue }
+            if ($names.ContainsKey($entry.name)) { $errors.Add("duplicate definition name '$($entry.name)'") }
+            else { $names[$entry.name] = $true }
+            if ($files.ContainsKey($entry.file)) { $errors.Add("duplicate definition file '$($entry.file)'") }
+            else { $files[$entry.file] = $true }
+        }
+    }
+    [pscustomobject]@{
+        Ok             = ($errors.Count -eq 0)
+        Errors         = @($errors)
+        CatalogVersion = if (Test-HushProp $Manifest 'catalogVersion') { [int64]$Manifest.catalogVersion } else { 0 }
+        PublishedAt    = $published
+        ExpiresAt      = $expires
+    }
+}
+
+function Test-HushManifestDefinitionMatch {
+    param([Parameter(Mandatory)]$Entry, [Parameter(Mandatory)]$Definition)
+    $fields = @('name', 'displayName', 'definitionVersion', 'updateDate', 'description')
+    foreach ($field in $fields) {
+        if (-not (Test-HushProp $Definition $field) -or -not (Test-HushProp $Entry $field)) { return $false }
+        if ([string]$Entry.$field -cne [string]$Definition.$field) { return $false }
+    }
+    return $true
 }
 
 # ----------------------------------------------------------------------------- guardrails

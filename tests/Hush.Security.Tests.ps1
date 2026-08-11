@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 <#
     Hush.Security.Tests.ps1
@@ -274,7 +274,7 @@ Describe 'Test-HushManifestEntry - traversal and integrity' {
         (Test-HushManifestEntry -Entry $e).Ok | Should -BeFalse
     }
     It 'accepts a well-formed entry' {
-        $e = [pscustomobject]@{ name = 'chrome-background'; file = 'chrome-background.json'; sha256 = ('0' * 64) }
+        $e = [pscustomobject]@{ name = 'chrome-background'; displayName = 'Chrome'; description = 't'; definitionVersion = 1; updateDate = '2026-01-01T00:00:00Z'; file = 'chrome-background.json'; sha256 = ('0' * 64) }
         (Test-HushManifestEntry -Entry $e).Ok | Should -BeTrue
     }
 }
@@ -287,5 +287,13 @@ Describe 'The shipped definitions still validate' {
     It 'adobe-background.json is valid' {
         $def = Get-Content -LiteralPath (Join-Path $script:DefDir 'adobe-background.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         (Test-HushDefinition -Def $def).Ok | Should -BeTrue
+    }
+    It 'manifest metadata and hashes are structurally valid' {
+        $manifest = Get-Content -LiteralPath (Join-Path $script:DefDir 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        (Test-HushManifest -Manifest $manifest -AllowExpired).Ok | Should -BeTrue
+        foreach ($entry in @($manifest.definitions)) {
+            $def = Get-Content -LiteralPath (Join-Path $script:DefDir $entry.file) -Raw -Encoding UTF8 | ConvertFrom-Json
+            (Test-HushManifestDefinitionMatch -Entry $entry -Definition $def) | Should -BeTrue
+        }
     }
 }

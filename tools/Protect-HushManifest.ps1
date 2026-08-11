@@ -13,17 +13,22 @@
     signature will not match what GitHub serves.
 
     Example:
-      .\Protect-HushManifest.ps1 -PrivateKeyPath .\hush-private.xml
+      .\Protect-HushManifest.ps1 -PrivateKeyPath .\hush-private.xml.dpapi
 #>
 
 [CmdletBinding()]
 param(
     [string]$DefinitionsDir = (Join-Path (Split-Path -Parent $PSScriptRoot) 'definitions'),
-    [Parameter(Mandatory)][string]$PrivateKeyPath
+    [string]$PrivateKeyPath,
+    [int]$CatalogVersion = 0,
+    [ValidateRange(1, 3650)][int]$ValidityDays = 90
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($PrivateKeyPath)) { throw 'Provide -PrivateKeyPath for the offline signing key (DPAPI protected or legacy XML).' }
+if (-not (Test-Path -LiteralPath $PrivateKeyPath)) { throw "Private signing key not found: $PrivateKeyPath" }
 
 # Reuse the same validation the clients enforce, so we can never sign a catalog the fetcher
 # or enforcer would reject (bad filename / unsafe field / disallowed registry key, etc.).
@@ -40,7 +45,16 @@ function Get-Sha256Hex([byte[]]$Bytes) {
 $manifestPath = Join-Path $DefinitionsDir 'manifest.json'
 $sigPath = "$manifestPath.sig"
 
+if ($CatalogVersion -le 0 -and (Test-Path -LiteralPath $manifestPath)) {
+    try {
+        $previous = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (Test-HushProp $previous 'catalogVersion') { $CatalogVersion = [int]$previous.catalogVersion + 1 }
+    } catch { }
+}
+if ($CatalogVersion -le 0) { $CatalogVersion = 1 }
+
 $defs = @()
+$names = @{}
 foreach ($file in (Get-ChildItem -Path $DefinitionsDir -Filter *.json | Where-Object { $_.Name -ne 'manifest.json' })) {
     if (-not (Test-HushSafeCacheFileName $file.Name)) { throw "$($file.Name): unsafe definition file name (must be a bare *.json)" }
     $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
@@ -48,6 +62,8 @@ foreach ($file in (Get-ChildItem -Path $DefinitionsDir -Filter *.json | Where-Ob
     foreach ($f in @('name', 'displayName', 'definitionVersion', 'updateDate', 'description')) {
         if ($null -eq $def.PSObject.Properties[$f]) { throw "$($file.Name): missing required field '$f'" }
     }
+    if ($names.ContainsKey($def.name)) { throw "Duplicate definition name '$($def.name)'" }
+    $names[$def.name] = $true
     $schemaResult = Test-HushDefinition -Def $def
     if (-not $schemaResult.Ok) { throw "$($file.Name): schema/guardrail invalid — $($schemaResult.Errors -join '; ')" }
     $defs += [pscustomobject]@{
@@ -63,9 +79,13 @@ foreach ($file in (Get-ChildItem -Path $DefinitionsDir -Filter *.json | Where-Ob
 }
 
 $manifest = [pscustomobject]@{
-    schemaVersion = 1
-    updateDate    = [datetime]::UtcNow.ToString('o')
-    definitions   = $defs
+    schemaVersion  = 2
+    catalogVersion = $CatalogVersion
+    publishedAt    = [datetime]::UtcNow.ToString('o')
+    expiresAt      = [datetime]::UtcNow.AddDays($ValidityDays).ToString('o')
+    # Retain updateDate as a friendly compatibility field for older tooling and logs.
+    updateDate     = [datetime]::UtcNow.ToString('o')
+    definitions    = $defs
 }
 
 # Write manifest as UTF-8 (no BOM) so the signed bytes equal the served bytes.
@@ -75,7 +95,16 @@ Write-Utf8NoBom $manifestPath ($manifest | ConvertTo-Json -Depth 8)
 $manifestBytes = [System.IO.File]::ReadAllBytes($manifestPath)
 $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
 try {
-    $rsa.FromXmlString((Get-Content -Path $PrivateKeyPath -Raw))
+    $privateText = Get-Content -Path $PrivateKeyPath -Raw
+    if ($privateText.TrimStart().StartsWith('<RSAKeyValue>', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $privateXml = $privateText
+    } else {
+        $securePrivate = ConvertTo-SecureString -String $privateText.Trim()
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePrivate)
+        try { $privateXml = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+        finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+    }
+    $rsa.FromXmlString($privateXml)
     $sig = $rsa.SignData($manifestBytes, 'SHA256')
     [System.IO.File]::WriteAllBytes($sigPath, $sig)
 } finally { $rsa.Dispose() }

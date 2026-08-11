@@ -48,34 +48,30 @@ try {
     }
 
     # --- Re-verify the cached catalog against the pinned public key ---
-    if (-not (Test-Path $paths.ManifestCache) -or -not (Test-Path $paths.ManifestSigCache)) {
+    $catalog = Get-HushCatalogFiles
+    if (-not $catalog) {
         throw 'No cached catalog yet (fetcher has not produced a verified manifest). Skipping.'
     }
-    $manifestBytes = [System.IO.File]::ReadAllBytes($paths.ManifestCache)
-    $sigBytes = [System.IO.File]::ReadAllBytes($paths.ManifestSigCache)
+    $manifestBytes = [System.IO.File]::ReadAllBytes($catalog.Manifest)
+    $sigBytes = [System.IO.File]::ReadAllBytes($catalog.ManifestSig)
     if (-not (Test-HushSignature -Data $manifestBytes -Signature $sigBytes -PublicKeyXml $config.publicKeyXml)) {
         throw 'Cached manifest signature INVALID — refusing to apply anything.'
     }
     $manifest = [System.Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
-    if (-not (Test-HushProp $manifest 'schemaVersion') -or $manifest.schemaVersion -ne 1) {
-        throw "Cached manifest schemaVersion unsupported — refusing to apply anything."
+    $manifestValid = Test-HushManifest -Manifest $manifest -AllowExpired
+    if (-not $manifestValid.Ok) {
+        throw "Cached manifest validation failed — $($manifestValid.Errors -join '; ') — refusing to apply anything."
     }
 
     # --- Manifest-level anti-rollback ---
-    # Per-definition versions block downgrading a single definition; this blocks replaying a
-    # whole older (but still validly-signed) catalog, which could otherwise drop/withhold
-    # definitions. We record the highest manifest updateDate we've applied and refuse anything
-    # older. Missing/unparseable dates skip the check (the manifest is still signature-gated).
-    $manifestDate = $null
-    if ((Test-HushProp $manifest 'updateDate') -and $manifest.updateDate) {
-        try { $manifestDate = ConvertTo-HushUtc $manifest.updateDate } catch { }
+    # Per-definition versions block a single-definition rollback; catalogVersion blocks a
+    # replayed catalog that drops or withholds definitions.
+    $priorCatalogVersion = 0
+    if ((Test-HushProp $state 'catalogVersion') -and $state.catalogVersion) {
+        try { $priorCatalogVersion = [int64]$state.catalogVersion } catch { }
     }
-    $priorManifestDate = $null
-    if ((Test-HushProp $state 'manifestUpdateDate') -and $state.manifestUpdateDate) {
-        try { $priorManifestDate = ConvertTo-HushUtc $state.manifestUpdateDate } catch { }
-    }
-    if ($manifestDate -and $priorManifestDate -and ($manifestDate -lt $priorManifestDate)) {
-        throw "Cached manifest rollback blocked (updateDate $($manifestDate.ToString('o')) < last-applied $($priorManifestDate.ToString('o'))) — refusing to apply anything."
+    if ($manifestValid.CatalogVersion -lt $priorCatalogVersion) {
+        throw "Cached catalog rollback blocked (v$($manifestValid.CatalogVersion) < last-applied v$priorCatalogVersion) — refusing to apply anything."
     }
 
     $byName = @{}
@@ -98,12 +94,16 @@ try {
     if ((Test-HushProp $fetchStatus 'lastFetchUtc') -and $fetchStatus.lastFetchUtc) {
         try { $lastFetch = ConvertTo-HushUtc $fetchStatus.lastFetchUtc } catch { }
     }
-    if (-not $lastFetch) { $lastFetch = (Get-Item $paths.ManifestCache).LastWriteTimeUtc }
+    if (-not $lastFetch) { $lastFetch = (Get-Item $catalog.Manifest).LastWriteTimeUtc }
     $ageHours = ([datetime]::UtcNow - $lastFetch).TotalHours
     $maxAge = if (Test-HushProp $config 'maxDefinitionAgeHours') { [double]$config.maxDefinitionAgeHours } else { 72 }
     $stale = $ageHours -gt $maxAge
+    $expired = $manifestValid.ExpiresAt -and ([datetime]::UtcNow -gt $manifestValid.ExpiresAt)
     if ($stale) {
         Write-HushLog -Level Warning -Component 'enforce' -Message ("Definitions are STALE: last verified fetch {0:N1}h ago (> {1}h)." -f $ageHours, $maxAge)
+    }
+    if ($expired) {
+        Write-HushLog -Level Warning -Component 'enforce' -Message ("Catalog v{0} is expired (expires {1:o}); continuing with last-known-good policy." -f $manifestValid.CatalogVersion, $manifestValid.ExpiresAt)
     }
 
     # --- Applied-version tracking for anti-rollback ---
@@ -120,7 +120,7 @@ try {
             continue
         }
         $entry = $byName[$name]
-        $defPath = Join-Path $paths.Cache $entry.file
+        $defPath = Join-Path $catalog.Root $entry.file
         if (-not (Test-Path $defPath)) {
             Write-HushLog -Level Warning -Component 'enforce' -Message "'$name' not cached yet — will apply after next fetch."
             continue
@@ -135,6 +135,10 @@ try {
         $valid = Test-HushDefinition -Def $def
         if (-not $valid.Ok) {
             Write-HushLog -Level Warning -Component 'enforce' -Message "'$name' failed schema re-check — $($valid.Errors -join '; ') — skipped."
+            continue
+        }
+        if (-not (Test-HushManifestDefinitionMatch -Entry $entry -Definition $def)) {
+            Write-HushLog -Level Warning -Component 'enforce' -Message "'$name' manifest metadata mismatch — skipped."
             continue
         }
         if ($applied.ContainsKey($name) -and ($def.definitionVersion -lt $applied[$name])) {
@@ -162,7 +166,8 @@ try {
         $errs = @($allResults | Where-Object { $_.Status -eq 'Error' }).Count
         $blocked = @($allResults | Where-Object { $_.Status -in @('Blocked', 'Excluded') }).Count
         $state | Add-Member appliedVersions ([pscustomobject]$applied) -Force
-        if ($manifestDate) { $state | Add-Member manifestUpdateDate ($manifestDate.ToString('o')) -Force }
+        $state | Add-Member catalogVersion $manifestValid.CatalogVersion -Force
+        $state | Add-Member catalogExpired ([bool]$expired) -Force
         $state | Add-Member staleDefinitions ([bool]$stale) -Force
         $state | Add-Member lastEnforceUtc ([datetime]::UtcNow.ToString('o')) -Force
         $state | Add-Member lastEnforceResult "applied=$appl errors=$errs blocked/excluded=$blocked" -Force

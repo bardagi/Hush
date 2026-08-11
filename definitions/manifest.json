@@ -1,5 +1,8 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "catalogVersion": 1,
+  "publishedAt": "2026-06-18T00:00:00Z",
+  "expiresAt": "2026-09-16T00:00:00Z",
   "updateDate": "2026-06-18T00:00:00Z",
   "definitions": [
     {
@@ -7,7 +10,7 @@
       "displayName": "Chrome",
       "definitionVersion": 1,
       "updateDate": "2026-06-18T00:00:00Z",
-      "description": "Stop background tabs/apps & auto-launch",
+      "description": "Stop Google Chrome from running in the background.",
       "file": "chrome-background.json",
       "sha256": "46d9f4bf33cbe0182edb93fab8ed93164e79e45387af8acf2e82e4f33c311739"
     },
@@ -16,7 +19,7 @@
       "displayName": "Adobe",
       "definitionVersion": 1,
       "updateDate": "2026-06-18T00:00:00Z",
-      "description": "Stop background updater & cloud sync",
+      "description": "Stop Adobe background updaters and Creative Cloud helpers.",
       "file": "adobe-background.json",
       "sha256": "4bd023a06572ec7976f02497ba6ea9eb689750162292bcc8dd11e2c1b7c4a9c5"
     }

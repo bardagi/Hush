@@ -47,7 +47,7 @@ BeforeAll {
         # Builds cache\test-reg.json + a signed cache\manifest.json(.sig). A single
         # setRegistryValue action under SOFTWARE\Policies is used because Preview reports it
         # ('would set') without ever touching the registry.
-        param([int]$SchemaVersion = 1, [string]$ManifestUpdateDate = '2026-06-01T00:00:00Z')
+        param([int]$SchemaVersion = 2, [int]$CatalogVersion = 1, [string]$ManifestExpiresAt = '2999-01-01T00:00:00Z')
         $cache = Join-Path $script:Root 'cache'
         $def = [pscustomobject]@{
             schemaVersion     = 1
@@ -63,10 +63,12 @@ BeforeAll {
         $defFile = Join-Path $cache 'test-reg.json'
         Write-TestBytes $defFile ($def | ConvertTo-Json -Depth 16)
         $manifest = [pscustomobject]@{
-            schemaVersion = $SchemaVersion
-            updateDate    = $ManifestUpdateDate
-            definitions   = @(
-                [pscustomobject]@{ name = 'test-reg'; displayName = 'Test'; definitionVersion = 1; updateDate = '2026-01-01T00:00:00Z'; description = 't'; file = 'test-reg.json'; sha256 = (Get-HushFileSha256Hex -Path $defFile) }
+            schemaVersion  = $SchemaVersion
+            catalogVersion = $CatalogVersion
+            publishedAt    = '2026-01-01T00:00:00Z'
+            expiresAt      = $ManifestExpiresAt
+            definitions    = @(
+                [pscustomobject]@{ name = 'test-reg'; displayName = 'Test'; definitionVersion = 1; updateDate = '2026-01-01T00:00:00Z'; description = 'integration test def'; file = 'test-reg.json'; sha256 = (Get-HushFileSha256Hex -Path $defFile) }
             )
         }
         $mPath = Join-Path $cache 'manifest.json'
@@ -116,7 +118,7 @@ Describe 'Enforcer (Preview) over a signed cache' {
         ($res | Where-Object { $_.Status -eq 'Preview' }) | Should -BeNullOrEmpty
     }
     It 'rejects an unsupported manifest schemaVersion' {
-        New-TestCache -SchemaVersion 2     # re-signed, so the signature is valid but the schema is not
+        New-TestCache -SchemaVersion 3     # re-signed, so the signature is valid but the schema is not
         ($res = Invoke-TestEnforcer) | Out-Null
         ($res | Where-Object { $_.Status -eq 'Preview' }) | Should -BeNullOrEmpty
     }
@@ -125,10 +127,36 @@ Describe 'Enforcer (Preview) over a signed cache' {
         ($res = Invoke-TestEnforcer) | Out-Null
         ($res | Where-Object { $_.Status -eq 'Preview' }) | Should -BeNullOrEmpty
     }
-    It 'blocks a whole-catalog rollback by manifest updateDate' {
-        Set-TestState @{ manifestUpdateDate = '2999-01-01T00:00:00Z' }
+    It 'blocks a whole-catalog rollback by catalogVersion' {
+        Set-TestState @{ catalogVersion = 99 }
         ($res = Invoke-TestEnforcer) | Out-Null
         ($res | Where-Object { $_.Status -eq 'Preview' }) | Should -BeNullOrEmpty
+    }
+    It 'rejects a manifest whose metadata does not match its definition' {
+        $mPath = Join-Path $script:Root 'cache\manifest.json'
+        $manifest = Get-Content -LiteralPath $mPath -Raw | ConvertFrom-Json
+        $manifest.definitions[0].description = 'forged metadata'
+        Write-TestBytes $mPath ($manifest | ConvertTo-Json -Depth 16)
+        Protect-TestManifest $mPath
+        ($res = Invoke-TestEnforcer) | Out-Null
+        ($res | Where-Object { $_.Status -eq 'Preview' }) | Should -BeNullOrEmpty
+    }
+    It 'continues using an expired but structurally valid cached catalog with a warning' {
+        New-TestCache -ManifestExpiresAt '2026-02-01T00:00:00Z'
+        $res = Invoke-TestEnforcer
+        ($res | Where-Object { $_.Type -eq 'setRegistryValue' }).Status | Should -Be 'Preview'
+    }
+    It 'reads a complete catalog through the atomic active snapshot pointer' {
+        $cache = Join-Path $script:Root 'cache'
+        $snapshot = Join-Path $cache 'catalogs\1-0123456789abcdef'
+        New-Item -ItemType Directory -Path $snapshot -Force | Out-Null
+        Copy-Item (Join-Path $cache 'manifest.json') (Join-Path $snapshot 'manifest.json')
+        Copy-Item (Join-Path $cache 'manifest.json.sig') (Join-Path $snapshot 'manifest.json.sig')
+        Copy-Item (Join-Path $cache 'test-reg.json') (Join-Path $snapshot 'test-reg.json')
+        [pscustomobject]@{ catalogVersion = 1; directory = '1-0123456789abcdef' } |
+            ConvertTo-Json | Set-Content (Join-Path $cache 'active-catalog.json') -Encoding UTF8
+        $res = Invoke-TestEnforcer
+        ($res | Where-Object { $_.Type -eq 'setRegistryValue' }).Status | Should -Be 'Preview'
     }
 }
 

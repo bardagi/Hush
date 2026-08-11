@@ -1,7 +1,7 @@
 {
-  "_comment": "Hush machine config. The installer copies this to C:\\ProgramData\\Hush\\config.json and fills in your values. publicKeyXml is the PINNED RSA public key produced by tools\\New-HushSigningKey.ps1 — the private half must stay offline. It may also be an array of key strings to trust more than one key during rotation (any matching key verifies).",
+  "_comment": "Hush machine config. The installer copies this to C:\\ProgramData\\Hush\\config.json. The catalog URL defaults to the public Hush definitions repository; publicKeyXml is the PINNED RSA public key. Keep the private signing key offline. It may also be an array of key strings during rotation (any matching key verifies).",
 
-  "repoRawBaseUrl": "https://raw.githubusercontent.com/YOUR-ORG/hush-definitions/main/definitions",
+  "repoRawBaseUrl": "https://raw.githubusercontent.com/bardagi/hush-definitions/main/definitions",
   "manifestFile": "manifest.json",
 
   "publicKeyXml": "<RSAKeyValue><Modulus>REPLACE-WITH-YOUR-PUBLIC-KEY</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>",

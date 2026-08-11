@@ -11,14 +11,14 @@
 
     Example:
       .\Install-Hush.ps1 `
-          -RepoRawBaseUrl 'https://raw.githubusercontent.com/your-org/hush-definitions/main/definitions' `
+          -RepoRawBaseUrl 'https://raw.githubusercontent.com/bardagi/hush-definitions/main/definitions' `
           -PublicKeyPath  '.\hush-public.xml' `
           -EnabledDefinitions chrome-background
 #>
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string]$RepoRawBaseUrl,
+    [string]$RepoRawBaseUrl = 'https://raw.githubusercontent.com/bardagi/hush-definitions/main/definitions',
     [string[]]$PublicKeyXml,
     [string[]]$PublicKeyPath,
     [string]$ManifestFile = 'manifest.json',
@@ -39,6 +39,10 @@ if ($PublicKeyXml) { $pinnedKeys += $PublicKeyXml }
 if ($PublicKeyPath) { foreach ($p in $PublicKeyPath) { $pinnedKeys += (Get-Content -Path $p -Raw) } }
 $pinnedKeys = @($pinnedKeys | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 if ($pinnedKeys.Count -eq 0) { throw 'Provide -PublicKeyXml or -PublicKeyPath (the pinned RSA public key).' }
+try {
+    $repoUri = [uri]$RepoRawBaseUrl
+    if ($repoUri.Scheme -ne 'https' -or [string]::IsNullOrWhiteSpace($repoUri.Host)) { throw 'not https' }
+} catch { throw "RepoRawBaseUrl must be an HTTPS URL (got '$RepoRawBaseUrl')." }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $srcDir = Join-Path $repoRoot 'src'
@@ -47,13 +51,14 @@ $guiDir = Join-Path $repoRoot 'gui'
 $root = Join-Path $env:ProgramData 'Hush'
 $bin = Join-Path $root 'bin'
 $cache = Join-Path $root 'cache'
+$catalogs = Join-Path $cache 'catalogs'
 $logs = Join-Path $root 'logs'
 $backups = Join-Path $root 'backups'
 
 Write-Host "Installing Hush to $root ..." -ForegroundColor Cyan
 
 # 1) Folders
-foreach ($d in @($root, $bin, $cache, $logs, $backups)) {
+foreach ($d in @($root, $bin, $cache, $catalogs, $logs, $backups)) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
 }
 
@@ -85,7 +90,7 @@ if (-not (Test-Path $exclPath)) {
     [pscustomobject]@{ processes = @(); services = @(); autostarts = @() } | ConvertTo-Json | Set-Content $exclPath -Encoding UTF8
 }
 if (-not (Test-Path $statePath)) {
-    [pscustomobject]@{ snoozeUntil = $null; quietHours = @(); appliedVersions = @{}; lastEnforceUtc = $null } |
+    [pscustomobject]@{ snoozeUntil = $null; quietHours = @(); appliedVersions = @{}; catalogVersion = 0; lastEnforceUtc = $null } |
         ConvertTo-Json | Set-Content $statePath -Encoding UTF8
 }
 

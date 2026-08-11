@@ -8,7 +8,8 @@ Windows tool that watches for exactly the background noise you tell it to
 watch for, and quietly closes or removes it — on a schedule, per machine,
 from a catalog you control.
 
-You maintain a list of policies ("definitions") in a GitHub repo, pick which
+You maintain a list of policies ("definitions") in the separate public
+`bardagi/hush-definitions` GitHub repo, pick which
 ones apply to which machine, and Hush takes it from there.
 
 > Example: enforce "close Chrome in the background" on your laptop and
@@ -57,7 +58,7 @@ flowchart LR
 
     subgraph win["Windows machine"]
         direction TB
-        fetch["Hush-Fetch<br/>LOCAL SERVICE · no power<br/>download → verify signature →<br/>hash → anti-rollback → schema"]
+        fetch["Hush-Fetch<br/>LOCAL SERVICE · no power<br/>download → verify signature →<br/>hash → anti-rollback → schema → snapshot"]
         cache[("cache")]
         enforce["Hush-Enforce<br/>SYSTEM · no network<br/>re-verify cache →<br/>apply enabled definitions<br/>(guardrails, exclusions, snooze)"]
         gui["Hush Settings — GUI, self-elevating<br/>toggle defs · exclusions · snooze ·<br/>restore backups · preview/run"]
@@ -113,11 +114,14 @@ compromised fetcher cannot make SYSTEM apply forged instructions.
 - **Signed catalog, pinned key.** `manifest.json` is signed (RSA-2048 /
   SHA-256) and verified against a public key pinned in each machine's
   `config.json`. Every definition is SHA-256 checked against the signed
-  manifest. The private key stays offline.
+  manifest. The private key stays offline and should be kept in encrypted
+  storage or a non-exportable signing certificate.
 - **Fail-closed.** Bad download / bad signature / bad schema → keep the
   last verified cache and apply nothing new.
-- **Anti-rollback.** A definition with a lower `definitionVersion` than
-  what's cached/applied is rejected (no serving an old, weaker policy).
+- **Anti-rollback and expiry.** Monotonic `catalogVersion` and
+  `definitionVersion` values prevent replaying weaker policy. Catalogs also
+  carry a signed expiry; an expired last-known-good catalog is retained but
+  clearly reported until a fresh one is available.
 - **Non-overridable guardrails.** Hush refuses to kill critical OS
   processes (lsass, csrss, winlogon, services, smss, …) or disable
   protected services (Defender, etc.) even if a signed definition asks.
@@ -138,7 +142,8 @@ Hush/
 │             Hush.Common.ps1 (shared), config.example.json
 ├─ gui/       Hush-Settings.ps1 (WPF, self-elevating)
 ├─ tools/     New-HushSigningKey.ps1, Protect-HushManifest.ps1
-└─ definitions/   manifest.json (+.sig), chrome-background.json, adobe-background.json
+└─ definitions/   local fixtures/examples only; live catalog is in
+                  bardagi/hush-definitions
 ```
 
 Requires only **Windows PowerShell 5.1** (built into Windows 10/11) — no
@@ -148,28 +153,31 @@ modules to install.
 
 ## Operator setup (one time)
 
-1. **Make a signing key** (keep the private half offline):
+1. **Make a signing key** on an offline signing machine:
    ```powershell
    .\tools\New-HushSigningKey.ps1 -OutDir .
-   # -> hush-public.xml (pin this), hush-private.xml (KEEP OFFLINE)
+   # -> hush-public.xml (pin this), hush-private.xml.dpapi (KEEP OFFLINE)
    ```
-2. **Publish the definitions repo.** Put the `definitions/` folder in a
-   public GitHub repo. Keep the included `.gitattributes` so git does not
-   rewrite line endings (that would break the signature).
+2. **Publish the definitions repo.** Put `manifest.json`,
+   `manifest.json.sig`, and the authored `*.json` files in
+   `bardagi/hush-definitions/definitions`. Keep its `.gitattributes` so git
+   does not rewrite line endings (that would break hashes/signatures). Protect
+   the default branch with pull requests and required validation checks.
 3. **Sign the catalog** whenever you add/edit a definition:
    ```powershell
-   .\tools\Protect-HushManifest.ps1 -DefinitionsDir .\definitions -PrivateKeyPath .\hush-private.xml
+   .\tools\Protect-HushManifest.ps1 -DefinitionsDir .\definitions -PrivateKeyPath .\hush-private.xml.dpapi
    git add definitions ; git commit -m "update policy" ; git push
    ```
-   This regenerates `manifest.json` + `manifest.json.sig`. (The
-   `manifest.json` checked in here is illustrative — your run is
-   authoritative.)
+   This regenerates `manifest.json` + `manifest.json.sig`, increments the
+   catalog version, and gives the signed catalog a 90-day validity window.
+   Only the release signer should run this step and publish the resulting
+   catalog commit.
 
 ## Per-machine install (elevated)
 
 ```powershell
 .\install\Install-Hush.ps1 `
-    -RepoRawBaseUrl 'https://raw.githubusercontent.com/your-org/hush-definitions/main/definitions' `
+    -RepoRawBaseUrl 'https://raw.githubusercontent.com/bardagi/hush-definitions/main/definitions' `
     -PublicKeyPath  '.\hush-public.xml' `
     -EnabledDefinitions chrome-background      # optional starting selection
 ```
@@ -192,7 +200,7 @@ several to pin multiple public keys at once (see rotation below).
    `-PublicKeyPath .\hush-public-old.xml,.\hush-public-new.xml`.
 3. Once every machine trusts both, sign the catalog with the **new**
    private key (`Protect-HushManifest.ps1 -PrivateKeyPath
-   .\hush-private-new.xml`) and push.
+   .\hush-private-new.xml.dpapi`) and push.
 4. After the fleet has fetched at least once, re-run the installer pinning
    **only** the new key to retire the old one.
 
