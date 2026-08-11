@@ -45,21 +45,31 @@ ones apply to which machine, and Hush takes it from there.
 
 ## How it works
 
-```
-        GitHub (public repo)                 Windows machine
-   ┌──────────────────────────┐      ┌───────────────────────────────────────┐
-   │ definitions/             │      │  Hush-Fetch   (LOCAL SERVICE, no power)│
-   │   manifest.json (+ .sig) │  ───▶│   download → verify signature → hash   │
-   │   chrome-background.json │ HTTPS│   → anti-rollback → schema → cache\     │
-   │   adobe-background.json  │      │                                         │
-   └──────────────────────────┘      │  Hush-Enforce (SYSTEM)                  │
-                                      │   re-verify cache → apply enabled defs  │
-   pinned RSA public key  ───────────│   (guardrails, exclusions, snooze)      │
-                                      │                                         │
-                                      │  Hush Settings (GUI, self-elevating)    │
-                                      │   toggle defs · exclusions · snooze ·   │
-                                      │   restore backups · preview/run         │
-                                      └───────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph gh["GitHub — public repo"]
+        direction TB
+        manifest["manifest.json<br/>+ manifest.json.sig"]
+        defs["chrome-background.json<br/>adobe-background.json"]
+    end
+
+    key(["pinned RSA public key"])
+
+    subgraph win["Windows machine"]
+        direction TB
+        fetch["Hush-Fetch<br/>LOCAL SERVICE · no power<br/>download → verify signature →<br/>hash → anti-rollback → schema"]
+        cache[("cache")]
+        enforce["Hush-Enforce<br/>SYSTEM · no network<br/>re-verify cache →<br/>apply enabled definitions<br/>(guardrails, exclusions, snooze)"]
+        gui["Hush Settings — GUI, self-elevating<br/>toggle defs · exclusions · snooze ·<br/>restore backups · preview/run"]
+    end
+
+    gh -- HTTPS --> fetch
+    fetch --> cache
+    cache --> enforce
+    key -. pins .-> fetch
+    key -. pins .-> enforce
+    gui --> cache
+    gui -. configures .-> enforce
 ```
 
 Two scheduled tasks split responsibility by privilege:
