@@ -1,27 +1,27 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 1,
-  "publishedAt": "2026-06-18T00:00:00Z",
-  "expiresAt": "2026-09-16T00:00:00Z",
-  "updateDate": "2026-06-18T00:00:00Z",
+  "catalogVersion": 2,
+  "publishedAt": "2026-08-12T01:06:00Z",
+  "expiresAt": "2026-11-10T01:06:00Z",
+  "updateDate": "2026-08-12T01:06:00Z",
   "definitions": [
     {
       "name": "chrome-background",
       "displayName": "Chrome",
-      "definitionVersion": 2,
+      "definitionVersion": 3,
       "updateDate": "2026-08-12T00:00:00Z",
       "description": "Stop Google Chrome from running in the background.",
       "file": "chrome-background.json",
-      "sha256": "f57c716fe5046e9b5bbb53073d3582c0a5c529dab6a3bba62b877ddfdddf7b95"
+      "sha256": "63c5a4adcd3dac634be7a5ee437ebc3df04e6a2a5a1526ea7d20cddc4e5ca533"
     },
     {
       "name": "adobe-background",
       "displayName": "Adobe",
-      "definitionVersion": 1,
+      "definitionVersion": 2,
       "updateDate": "2026-06-18T00:00:00Z",
       "description": "Stop Adobe background updaters and Creative Cloud helpers.",
       "file": "adobe-background.json",
-      "sha256": "4bd023a06572ec7976f02497ba6ea9eb689750162292bcc8dd11e2c1b7c4a9c5"
+      "sha256": "31d1f230885ca5e5ad859a3c65f4f6791069853358e57f54d383158eb0ad2939"
     }
   ]
 }

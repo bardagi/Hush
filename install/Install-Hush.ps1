@@ -55,18 +55,36 @@ $catalogs = Join-Path $cache 'catalogs'
 $logs = Join-Path $root 'logs'
 $backups = Join-Path $root 'backups'
 
+. (Join-Path $srcDir 'Hush.InstallSecurity.ps1')
+
 Write-Host "Installing Hush to $root ..." -ForegroundColor Cyan
 
-# 1) Folders
-foreach ($d in @($root, $bin, $cache, $catalogs, $logs, $backups)) {
+# 1) Validate the pre-existing root before creating or traversing any child path.
+Assert-HushInstallTreeSafe -Root $root
+if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+}
+Assert-HushInstallTreeSafe -Root $root
+
+# 2) Folders. Directories are checked as a group before the nested catalog path is touched.
+foreach ($d in @($bin, $cache, $logs, $backups)) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
 }
+Assert-HushInstallTreeSafe -Root $root
+if (-not (Test-Path -LiteralPath $catalogs -PathType Container)) {
+    New-Item -ItemType Directory -Path $catalogs -Force | Out-Null
+}
 
-# 2) Copy scripts + GUI
+# 3) Secure the tree BEFORE copying any SYSTEM-executed script. This also repairs a
+#    pre-existing ProgramData\Hush tree, but refuses reparse points rather than traversing
+#    attacker-controlled locations.
+Protect-HushInstallTree -Root $root -Bin $bin -Cache $cache -Logs $logs -Backups $backups
+
+# 4) Copy scripts + GUI into the already-hardened executable directory.
 Copy-Item -Path (Join-Path $srcDir '*.ps1') -Destination $bin -Force
 Copy-Item -Path (Join-Path $guiDir 'Hush-Settings.ps1') -Destination $bin -Force
 
-# 3) config.json
+# 5) config.json
 $config = [pscustomobject]@{
     repoRawBaseUrl        = $RepoRawBaseUrl
     manifestFile          = $ManifestFile
@@ -77,38 +95,37 @@ $config = [pscustomobject]@{
     maxDefinitionAgeHours = $MaxDefinitionAgeHours
     protectedServices     = $ProtectedServices
 }
-$config | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $root 'config.json') -Encoding UTF8
+$configPath = Join-Path $root 'config.json'
+$config | ConvertTo-Json -Depth 8 | Set-Content -Path $configPath -Encoding UTF8
+Protect-HushConfigFile -Root $root -ConfigPath $configPath
 
-# 4) Seed state files if absent (don't clobber on re-install)
+# 6) Seed state files if absent (don't clobber on re-install)
 $enabledPath = Join-Path $root 'enabled.json'
 $exclPath = Join-Path $root 'exclusions.json'
+$preferencesPath = Join-Path $root 'preferences.json'
 $statePath = Join-Path $root 'state.json'
 if (-not (Test-Path $enabledPath)) {
-    [pscustomobject]@{ enabled = $EnabledDefinitions } | ConvertTo-Json | Set-Content $enabledPath -Encoding UTF8
+    [pscustomobject]@{ enabled = $EnabledDefinitions; optionalActions = [pscustomobject]@{} } |
+        ConvertTo-Json -Depth 8 | Set-Content $enabledPath -Encoding UTF8
 }
 if (-not (Test-Path $exclPath)) {
     [pscustomobject]@{ processes = @(); services = @(); autostarts = @() } | ConvertTo-Json | Set-Content $exclPath -Encoding UTF8
 }
+if (-not (Test-Path $preferencesPath)) {
+    [pscustomobject]@{ snoozeUntil = $null; quietHours = @() } |
+        ConvertTo-Json -Depth 8 | Set-Content $preferencesPath -Encoding UTF8
+}
 if (-not (Test-Path $statePath)) {
-    [pscustomobject]@{ snoozeUntil = $null; quietHours = @(); appliedVersions = @{}; catalogVersion = 0; lastEnforceUtc = $null } |
+    [pscustomobject]@{ appliedVersions = @{}; catalogVersion = 0; lastEnforceUtc = $null } |
         ConvertTo-Json | Set-Content $statePath -Encoding UTF8
 }
 
-# 5) Harden ACLs (SIDs: SYSTEM=S-1-5-18, LOCAL SERVICE=S-1-5-19, Admins=S-1-5-32-544, Users=S-1-5-32-545)
-Write-Host 'Hardening permissions ...' -ForegroundColor Cyan
-& icacls $root /inheritance:r /grant:r `
-    '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' '*S-1-5-19:(OI)(CI)RX' | Out-Null
-# Fetcher (LOCAL SERVICE) writes ONLY the cache (verified definitions + fetch-status.json).
-# It deliberately has no write access to the install root or state.json — the SYSTEM enforcer
-# owns state.json, so the network-facing component can never alter privileged state.
-& icacls $cache /grant:r '*S-1-5-19:(OI)(CI)M' | Out-Null
-
-# 6) Event Log source
+# 7) Event Log source
 if (-not [System.Diagnostics.EventLog]::SourceExists('Hush')) {
     New-EventLog -LogName 'Application' -Source 'Hush'
 }
 
-# 7) Scheduled tasks
+# 8) Scheduled tasks
 function Resolve-HushWindowsPowerShell {
     $candidates = @()
     if ($env:windir) {
@@ -143,7 +160,7 @@ $enforcePrincipal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -Lo
 Register-ScheduledTask -TaskName 'Hush-Enforce' -Force -Description 'Hush: apply cached, re-verified background policy (SYSTEM).' `
     -Action $enforceAction -Trigger (New-HushRepeatingTriggers -OffsetMinutes 2) -Principal $enforcePrincipal -Settings $settings | Out-Null
 
-# 8) Start-Menu shortcut to the GUI
+# 9) Start-Menu shortcut to the GUI
 $shortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Hush Settings.lnk'
 $wsh = New-Object -ComObject WScript.Shell
 $lnk = $wsh.CreateShortcut($shortcut)
@@ -153,7 +170,7 @@ $lnk.IconLocation = "$ps,0"
 $lnk.Description = 'Choose what Hush closes in the background'
 $lnk.Save()
 
-# 9) Prime the cache (best-effort — needs a real repo URL + key configured)
+# 10) Prime the cache (best-effort — needs a real repo URL + key configured)
 Write-Host 'Priming definition cache ...' -ForegroundColor Cyan
 try { Start-ScheduledTask -TaskName 'Hush-Fetch' } catch { }
 

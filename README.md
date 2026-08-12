@@ -23,14 +23,18 @@ ones apply to which machine, and Hush takes it from there.
 - **Pick what gets closed, per machine.** A small GUI lists every
   definition in the catalog — toggle the ones you want enforced here, leave
   the rest off. Same catalog, different behavior per machine.
+- **Optional actions are opt-in.** Every action has a stable ID. Actions marked
+  `optional` remain off until selected explicitly in the GUI.
 - **Snooze it.** Mid-download, mid-meeting, mid-anything: snooze for 1
   hour, 4 hours, or until 7am. Or set recurring quiet hours (e.g. 9–17) so
   Hush stays out of your way automatically, no need to remember to snooze.
 - **Exclude what you don't want touched.** A per-machine "never touch this"
   list for processes, services, or autostarts. It overrides everything
   else, including the definitions themselves.
-- **Nothing disappears for good.** Removed autostarts are backed up before
-  they're touched, and restorable from the GUI in one click.
+- **Nothing reversible disappears for good.** Services, registry values, and
+  autostarts record their prior state in a SYSTEM-owned journal. Disabling a
+  definition or uninstalling asks for confirmation and restores those changes;
+  process termination is explicitly non-reversible.
 - **Preview before it runs.** See exactly what a definition would do — kill
   this process, stop that service, clear that registry key — before you let
   it touch anything.
@@ -132,8 +136,9 @@ compromised fetcher cannot make SYSTEM apply forged instructions.
 - **Local exclusions.** A per-machine "never touch" list layered on top of
   the guardrails.
 - **Hardened install.** `C:\ProgramData\Hush` is writable only by
-  SYSTEM/Administrators (the cache adds write for LOCAL SERVICE only), so
-  a standard user can't swap the SYSTEM-run script.
+  SYSTEM/Administrators (the cache adds write for LOCAL SERVICE only), with
+  separate private ACLs for configuration, logs, backups, and the journal.
+  Reparse points and unknown explicit ACEs are rejected before scripts are copied.
 - **Auditable.** Every action → `logs\hush.log` and the `Hush` Windows
   Event Log source.
 
@@ -218,10 +223,20 @@ Action types:
 
 | type | required | notes |
 |------|----------|-------|
-| `killProcess`      | `match.name` | optional `match.company`/`match.path`, `killTree`, `backgroundOnly`, `optional` |
-| `stopService`      | `name` | `disable` also sets Startup=Disabled |
-| `removeAutostart`  | `kind`, `name` | `kind` = `registryRun` \| `startupFolder` \| `scheduledTask`; `scope`, `disableOnly`, `optional` |
-| `setRegistryValue` | `hive`,`path`,`name`,`valueType`,`data` | `hive` = HKLM \| HKCU; `path` must be under `SOFTWARE\Policies\` (guardrailed); `data` must match `valueType` |
+| `killProcess`      | `id`, `match.name` | optional `match.company`/`match.path`, `killTree`, `backgroundOnly`, `optional` |
+| `stopService`      | `id`, `name` | `disable` also sets Startup=Disabled |
+| `removeAutostart`  | `id`, `kind`, `name` | `kind` = `registryRun` \| `startupFolder` \| `scheduledTask`; scheduled tasks also require exact `taskPath`; `scope`, `disableOnly`, `optional` |
+| `setRegistryValue` | `id`, `hive`,`path`,`name`,`valueType`,`data` | SYSTEM definitions support HKLM only; the shipped allowlist is `HKLM\SOFTWARE\Policies\Google\Chrome\BackgroundModeEnabled`; `data` must match `valueType` |
+
+Every action must have a stable safe `id` (`[A-Za-z0-9._-]+`). The GUI persists
+optional selections separately, for example:
+
+```json
+{
+  "enabled": ["chrome-background"],
+  "optionalActions": { "chrome-background": ["stop-gupdate"] }
+}
+```
 
 All names are sanitised: `killProcess` `match.name` and `stopService`
 `name` are **exact** (no wildcards); only `removeAutostart` `name` is a
@@ -230,21 +245,35 @@ restricted to the `SOFTWARE\Policies\` subtree — use `removeAutostart`
 (not `setRegistryValue`) to turn off autoruns. Anything outside these
 rules makes the whole definition fail validation.
 
-Removed autostarts are backed up to `backups\` and can be restored from
-the GUI. Mark anything risky (e.g. updater tasks) `optional`/`disableOnly`
-to keep things reversible. See `definitions/chrome-background.json` for a
-complete example.
+Removed autostarts are backed up to `backups\` and journaled along with prior
+service and registry state. Mark anything risky (e.g. updater tasks)
+`optional`/`disableOnly` to keep it off by default. Preview a disabled definition
+from the Definitions tab before saving or running it. See
+`definitions/chrome-background.json` for a complete example. `HKCU` actions are
+rejected under the SYSTEM enforcer; `allUsers` autostarts cover machine-wide
+locations and currently loaded user hives/profiles only.
 
 ## Uninstall
 
 ```powershell
-.\install\Uninstall-Hush.ps1            # remove tasks/shortcut/event source, keep data
-.\install\Uninstall-Hush.ps1 -RemoveData # also delete C:\ProgramData\Hush
+.\install\Uninstall-Hush.ps1            # restore reversible changes, remove tasks, keep data
+.\install\Uninstall-Hush.ps1 -RemoveData # restore, then delete C:\ProgramData\Hush
 ```
+
+Uninstall restores every pending reversible journal entry first. If any restore
+fails, removal aborts and the installation is preserved for recovery.
 
 ## Testing locally (no install)
 
 Point Hush at a local tree via `HUSH_ROOT` and exercise the verify → apply
-path without touching ProgramData or the schedule. See the verification
-section of the plan for the full matrix (signature negatives, guardrails,
-exclusions, anti-rollback, snooze, backup/restore).
+path without touching ProgramData or the schedule. The release gate is:
+
+```powershell
+.\tools\Invoke-Quality.ps1 -Fix
+```
+
+It runs JSON validation, PSScriptAnalyzer/format checks, Pester tests for
+optional selection, preview, rollback, snapshot fallback, ACL trust checks,
+reserved targets, and HKCU rejection. A disposable elevated Windows
+install/uninstall exercise should additionally verify the effective ACLs and
+rollback behavior before release.

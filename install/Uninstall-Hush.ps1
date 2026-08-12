@@ -15,6 +15,17 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
 
 Write-Host 'Removing Hush ...' -ForegroundColor Cyan
+$root = Join-Path $env:ProgramData 'Hush'
+
+# Restore all tracked reversible changes before removing the scheduled tasks or journal.
+# A failed restore aborts uninstall so the operator can recover with Hush still present.
+$rollbackScript = Join-Path $root 'bin\Invoke-Hush.ps1'
+$changesPath = Join-Path $root 'changes.json'
+if ((Test-Path -LiteralPath $rollbackScript) -and (Test-Path -LiteralPath $changesPath)) {
+    & $rollbackScript -RollbackAll | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Hush rollback failed; uninstall aborted and data was preserved.' }
+    Write-Host '  restored Hush-managed reversible changes'
+}
 
 foreach ($task in @('Hush-Fetch', 'Hush-Enforce')) {
     if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
@@ -33,7 +44,6 @@ try {
     }
 } catch { }
 
-$root = Join-Path $env:ProgramData 'Hush'
 if ($RemoveData) {
     if (Test-Path $root) {
         # Restore inheritance so removal isn't blocked by the hardened ACL.

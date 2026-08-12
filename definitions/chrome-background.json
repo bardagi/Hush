@@ -2,11 +2,12 @@
   "schemaVersion": 1,
   "name": "chrome-background",
   "displayName": "Chrome",
-  "definitionVersion": 2,
+  "definitionVersion": 3,
   "updateDate": "2026-08-12T00:00:00Z",
   "description": "Stop Google Chrome from running in the background.",
   "actions": [
     {
+      "id": "kill-chrome",
       "type": "killProcess",
       "match": { "name": "chrome.exe" },
       "killTree": true,
@@ -14,12 +15,14 @@
       "comment": "Stop Chrome only when its process tree has no visible browser window"
     },
     {
+      "id": "kill-elevation-service",
       "type": "killProcess",
       "match": { "name": "elevation_service.exe", "company": "Google LLC" },
       "optional": true,
-      "comment": "Chrome's elevation helper"
+      "comment": "Stop Chrome's elevation helper (the process stop cannot be undone automatically)"
     },
     {
+      "id": "set-background-mode",
       "type": "setRegistryValue",
       "hive": "HKLM",
       "path": "SOFTWARE\\Policies\\Google\\Chrome",
@@ -29,6 +32,7 @@
       "comment": "Policy: Chrome must NOT keep background apps alive after the window is closed"
     },
     {
+      "id": "remove-chrome-autolaunch",
       "type": "removeAutostart",
       "kind": "registryRun",
       "scope": "allUsers",
@@ -36,6 +40,7 @@
       "comment": "Remove Chrome's per-user auto-launch on logon (name has a per-install hash suffix)"
     },
     {
+      "id": "stop-gupdate",
       "type": "stopService",
       "name": "gupdate",
       "disable": true,
@@ -43,6 +48,7 @@
       "comment": "Google Update service (optional; disabling pauses Chrome auto-updates)"
     },
     {
+      "id": "stop-gupdatem",
       "type": "stopService",
       "name": "gupdatem",
       "disable": true,
@@ -50,8 +56,10 @@
       "comment": "Google Update per-machine service (optional)"
     },
     {
+      "id": "disable-google-update-task",
       "type": "removeAutostart",
       "kind": "scheduledTask",
+      "taskPath": "\\",
       "name": "GoogleUpdateTaskMachine*",
       "disableOnly": true,
       "optional": true,

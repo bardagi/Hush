@@ -2,28 +2,33 @@
   "schemaVersion": 1,
   "name": "adobe-background",
   "displayName": "Adobe",
-  "definitionVersion": 1,
+  "definitionVersion": 2,
   "updateDate": "2026-06-18T00:00:00Z",
   "description": "Stop Adobe background updaters and Creative Cloud helpers.",
   "actions": [
     {
+      "id": "kill-notification-client",
       "type": "killProcess",
       "match": { "name": "AdobeNotificationClient.exe" },
       "optional": true,
-      "comment": "Creative Cloud notification helper"
+      "comment": "Stop the Creative Cloud notification helper (the process stop cannot be undone automatically)"
     },
     {
+      "id": "kill-ccx-process",
       "type": "killProcess",
       "match": { "name": "CCXProcess.exe" },
       "optional": true,
-      "comment": "Creative Cloud experience background process"
+      "comment": "Stop the Creative Cloud experience process (the process stop cannot be undone automatically)"
     },
     {
+      "id": "kill-ipc-broker",
       "type": "killProcess",
       "match": { "name": "AdobeIPCBroker.exe" },
-      "optional": true
+      "optional": true,
+      "comment": "Stop the Adobe IPC broker (the process stop cannot be undone automatically)"
     },
     {
+      "id": "kill-desktop-service",
       "type": "killProcess",
       "match": { "name": "Adobe Desktop Service.exe" },
       "killTree": true,
@@ -31,6 +36,7 @@
       "comment": "Creative Cloud desktop service that keeps helpers alive"
     },
     {
+      "id": "stop-adobe-update",
       "type": "stopService",
       "name": "AdobeUpdateService",
       "disable": true,
@@ -38,6 +44,7 @@
       "comment": "Adobe background update service"
     },
     {
+      "id": "stop-ags-service",
       "type": "stopService",
       "name": "AGSService",
       "disable": true,
@@ -45,6 +52,7 @@
       "comment": "Adobe Genuine Software service"
     },
     {
+      "id": "remove-aam-updater",
       "type": "removeAutostart",
       "kind": "registryRun",
       "scope": "allUsers",
@@ -52,15 +60,19 @@
       "comment": "Adobe AAM auto-updater logon entry"
     },
     {
+      "id": "remove-ccx-autostart",
       "type": "removeAutostart",
       "kind": "registryRun",
       "scope": "allUsers",
       "name": "Adobe CCXProcess",
-      "optional": true
+      "optional": true,
+      "comment": "Remove the Creative Cloud logon entry (a backup is kept for restoration)"
     },
     {
+      "id": "disable-adobe-tasks",
       "type": "removeAutostart",
       "kind": "scheduledTask",
+      "taskPath": "\\",
       "name": "Adobe*",
       "disableOnly": true,
       "optional": true,

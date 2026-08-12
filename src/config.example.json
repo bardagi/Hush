@@ -1,5 +1,5 @@
 {
-  "_comment": "Hush machine config. The installer copies this to C:\\ProgramData\\Hush\\config.json. The catalog URL defaults to the public Hush definitions repository; publicKeyXml is the PINNED RSA public key. Keep the private signing key offline. It may also be an array of key strings during rotation (any matching key verifies).",
+  "_comment": "Hush machine config. The installer copies this to C:\\ProgramData\\Hush\\config.json. User selections live in enabled.json (including optionalActions); snooze/quiet-hours live in preferences.json; runtime status and the SYSTEM-owned reversible journal live separately. The catalog URL defaults to the public Hush definitions repository; publicKeyXml is the PINNED RSA public key. Keep the private signing key offline. It may also be an array of key strings during rotation (any matching key verifies). SYSTEM definitions support HKLM policy paths only; HKCU actions are rejected.",
 
   "repoRawBaseUrl": "https://raw.githubusercontent.com/bardagi/hush-definitions/main/definitions",
   "manifestFile": "manifest.json",

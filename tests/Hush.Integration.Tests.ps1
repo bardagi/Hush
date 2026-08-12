@@ -19,6 +19,7 @@ BeforeAll {
     # its own StrictMode when invoked below, so product behaviour is unchanged.
     Set-StrictMode -Off
     $script:Enforcer = (Resolve-Path (Join-Path $PSScriptRoot '..\src\Invoke-Hush.ps1')).Path
+    $script:Fetcher = (Resolve-Path (Join-Path $PSScriptRoot '..\src\Update-HushDefinitions.ps1')).Path
 
     $script:Root = Join-Path ([System.IO.Path]::GetTempPath()) ('hush-it-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path (Join-Path $Root 'cache') -Force | Out-Null
@@ -45,7 +46,7 @@ BeforeAll {
 
     function New-TestCache {
         # Builds cache\test-reg.json + a signed cache\manifest.json(.sig). A single
-        # setRegistryValue action under SOFTWARE\Policies is used because Preview reports it
+        # the explicitly allowlisted Chrome policy action is used because Preview reports it
         # ('would set') without ever touching the registry.
         param([int]$SchemaVersion = 2, [int]$CatalogVersion = 1, [string]$ManifestExpiresAt = '2999-01-01T00:00:00Z')
         $cache = Join-Path $script:Root 'cache'
@@ -57,7 +58,7 @@ BeforeAll {
             updateDate        = '2026-01-01T00:00:00Z'
             description       = 'integration test def'
             actions           = @(
-                [pscustomobject]@{ type = 'setRegistryValue'; hive = 'HKLM'; path = 'SOFTWARE\Policies\HushTest'; name = 'Flag'; valueType = 'DWord'; data = 0 }
+                [pscustomobject]@{ id = 'set-test-flag'; type = 'setRegistryValue'; hive = 'HKLM'; path = 'SOFTWARE\Policies\Google\Chrome'; name = 'BackgroundModeEnabled'; valueType = 'DWord'; data = 0 }
             )
         }
         $defFile = Join-Path $cache 'test-reg.json'
@@ -84,7 +85,9 @@ BeforeAll {
         # The enforcer ends with `exit`; under the call operator that returns control here and
         # the Preview results already written to the pipeline are captured. Filter to a clean
         # array of result objects so callers can pipe/count safely on the refusal path (empty).
-        $out = & $script:Enforcer -Preview 2>$null
+        param([string]$DefinitionName)
+        if ($DefinitionName) { $out = & $script:Enforcer -Preview -PreviewDefinition $DefinitionName 2>$null }
+        else { $out = & $script:Enforcer -Preview 2>$null }
         @($out | Where-Object { $null -ne $_ })
     }
 }
@@ -158,9 +161,70 @@ Describe 'Enforcer (Preview) over a signed cache' {
         $res = Invoke-TestEnforcer
         ($res | Where-Object { $_.Type -eq 'setRegistryValue' }).Status | Should -Be 'Preview'
     }
+    It 'previews a disabled definition without changing enabled.json' {
+        [pscustomobject]@{ enabled = @() } | ConvertTo-Json | Set-Content (Join-Path $script:Root 'enabled.json') -Encoding UTF8
+        $res = Invoke-TestEnforcer -DefinitionName 'test-reg'
+        ($res | Where-Object { $_.Type -eq 'setRegistryValue' }).Status | Should -Be 'Preview'
+        (Read-HushJson -Path (Join-Path $script:Root 'enabled.json')).enabled | Should -BeNullOrEmpty
+    }
+    It 'falls back to the newest complete snapshot when the active pointer is interrupted' {
+        $cache = Join-Path $script:Root 'cache'
+        $catalogs = Join-Path $cache 'catalogs'
+        $complete = Join-Path $catalogs '1-0123456789abcdef'
+        $incomplete = Join-Path $catalogs '2-fedcba9876543210'
+        New-Item -ItemType Directory -Path $complete, $incomplete -Force | Out-Null
+        foreach ($file in @('manifest.json', 'manifest.json.sig', 'test-reg.json')) {
+            Copy-Item (Join-Path $cache $file) (Join-Path $complete $file)
+        }
+        Copy-Item (Join-Path $cache 'manifest.json') (Join-Path $incomplete 'manifest.json')
+        Copy-Item (Join-Path $cache 'manifest.json.sig') (Join-Path $incomplete 'manifest.json.sig')
+        [System.IO.File]::WriteAllText((Join-Path $cache 'active-catalog.json'), '{"catalogVersion":2,"directory":"2-fedcba9876543210"}')
+        $catalog = Get-HushCatalogFiles
+        (Split-Path -Leaf $catalog.Root) | Should -Be '1-0123456789abcdef'
+    }
+    It 'records a failed enforcement operation and returns non-zero' {
+        $sig = Join-Path $script:Root 'cache\manifest.json.sig'
+        $bytes = [System.IO.File]::ReadAllBytes($sig); $bytes[0] = $bytes[0] -bxor 0xFF
+        [System.IO.File]::WriteAllBytes($sig, $bytes)
+        & $script:Enforcer 2>$null | Out-Null
+        $LASTEXITCODE | Should -Be 1
+        $state = Read-HushJson -Path (Join-Path $script:Root 'state.json')
+        $state.lastEnforceStatus | Should -Be 'failed'
+        $state.lastEnforceExitCode | Should -Be 1
+        (Test-HushProp $state 'lastEnforceOperationId') | Should -BeTrue
+        (Test-HushProp $state 'lastEnforceRequestedUtc') | Should -BeTrue
+        (Test-HushProp $state 'lastEnforceCompletedUtc') | Should -BeTrue
+        (Test-HushProp $state 'lastEnforceError') | Should -BeTrue
+    }
+}
+
+Describe 'Fetcher operation status' {
+    It 'records a failed fetch with timestamps, operation ID, and exit status' {
+        [pscustomobject]@{
+            repoRawBaseUrl = 'http://not-allowed.example'
+            manifestFile   = 'manifest.json'
+            publicKeyXml   = $script:PubXml
+        } | ConvertTo-Json | Set-Content (Join-Path $script:Root 'config.json') -Encoding UTF8
+        & $script:Fetcher 2>$null | Out-Null
+        $LASTEXITCODE | Should -Be 1
+        $status = Read-HushJson -Path (Join-Path $script:Root 'cache\fetch-status.json')
+        $status.status | Should -Be 'failed'
+        $status.exitCode | Should -Be 1
+        (Test-HushProp $status 'operationId') | Should -BeTrue
+        (Test-HushProp $status 'requestedAtUtc') | Should -BeTrue
+        (Test-HushProp $status 'completedAtUtc') | Should -BeTrue
+        (Test-HushProp $status 'error') | Should -BeTrue
+    }
 }
 
 Describe 'Action guardrails and per-entry exclusions (Preview)' {
+    It 'keeps optional actions disabled unless their stable ID is selected' {
+        $a = [pscustomobject]@{ id = 'optional-test'; type = 'setRegistryValue'; optional = $true; hive = 'HKLM'; path = 'SOFTWARE\Policies\Google\Chrome'; name = 'BackgroundModeEnabled'; valueType = 'DWord'; data = 0 }
+        $ctx = [pscustomobject]@{ Preview = $true; Exclusions = $null; Config = $null; OptionalActionIds = @() }
+        (Invoke-HushAction -Action $a -Context $ctx).Status | Should -Be 'NotSelected'
+        $ctx.OptionalActionIds = @('optional-test')
+        (Invoke-HushAction -Action $a -Context $ctx).Status | Should -Be 'Preview'
+    }
     It 'blocks a protected process before any lookup' {
         $a = [pscustomobject]@{ type = 'killProcess'; match = [pscustomobject]@{ name = 'lsass.exe' } }
         $ctx = [pscustomobject]@{ Preview = $true; Exclusions = $null; Config = $null }

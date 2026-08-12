@@ -15,6 +15,12 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'Hush.Common.ps1')
 
+$catalogLock = $null
+$paths = $null
+$fetchOperationId = [guid]::NewGuid().ToString('N')
+$fetchRequestedAtUtc = $null
+$previousFetchStatus = $null
+
 function Get-HushUrlBytes {
     param([Parameter(Mandatory)][string]$Url)
     Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
@@ -42,6 +48,15 @@ try {
     if (-not $config) { throw "Config not found at $($paths.Config)" }
     if (-not (Test-Path $paths.Cache)) { New-Item -ItemType Directory -Path $paths.Cache -Force | Out-Null }
     if (-not (Test-Path $paths.Catalogs)) { New-Item -ItemType Directory -Path $paths.Catalogs -Force | Out-Null }
+    $catalogLock = Enter-HushCatalogLock
+    $previousFetchStatus = Read-HushJson -Path $paths.FetchStatus
+    $fetchRequestedAtUtc = [datetime]::UtcNow.ToString('o')
+    Write-HushJsonAtomic -Path $paths.FetchStatus -Object ([pscustomobject]@{
+            operationId    = $fetchOperationId
+            status         = 'running'
+            requestedAtUtc = $fetchRequestedAtUtc
+            exitCode       = $null
+        })
 
     $base = $config.repoRawBaseUrl.TrimEnd('/')
     $baseUri = [uri]$base
@@ -165,12 +180,47 @@ try {
     $manifestHash = Get-HushSha256Hex -Bytes $manifestBytes
     $snapshotName = '{0}-{1}' -f $manifestValid.CatalogVersion, $manifestHash.Substring(0, 16)
     $snapshot = Join-Path $paths.Catalogs $snapshotName
-    if (Test-Path $snapshot) { Remove-Item -LiteralPath $snapshot -Recurse -Force }
-    New-Item -ItemType Directory -Path $snapshot -Force | Out-Null
-    [System.IO.File]::WriteAllBytes((Join-Path $snapshot 'manifest.json'), $manifestBytes)
-    [System.IO.File]::WriteAllBytes((Join-Path $snapshot 'manifest.json.sig'), $sigBytes)
-    foreach ($file in $staged.Keys) {
-        [System.IO.File]::WriteAllBytes((Join-Path $snapshot $file), $staged[$file])
+    $snapshotReady = $false
+    if (Test-Path -LiteralPath $snapshot) {
+        try {
+            $snapshotReady = ((Get-HushFileSha256Hex -Path (Join-Path $snapshot 'manifest.json')) -eq $manifestHash)
+            if ($snapshotReady) {
+                $snapshotReady = ((Get-HushFileSha256Hex -Path (Join-Path $snapshot 'manifest.json.sig')) -eq (Get-HushSha256Hex -Bytes $sigBytes))
+            }
+            if ($snapshotReady) {
+                foreach ($file in $staged.Keys) {
+                    if (-not (Test-Path -LiteralPath (Join-Path $snapshot $file)) -or
+                        (Get-HushFileSha256Hex -Path (Join-Path $snapshot $file)) -ne (Get-HushSha256Hex -Bytes $staged[$file])) {
+                        $snapshotReady = $false
+                        break
+                    }
+                }
+            }
+        } catch { $snapshotReady = $false }
+    }
+    if (-not $snapshotReady) {
+        # Never rewrite the active directory. A unique final name also allows a corrupt
+        # snapshot with the expected content hash to remain available for later cleanup.
+        if (Test-Path -LiteralPath $snapshot) {
+            do {
+                $snapshotName = '{0}-{1}-{2}' -f $manifestValid.CatalogVersion, $manifestHash.Substring(0, 16),
+                ([guid]::NewGuid().ToString('N').Substring(0, 8))
+                $snapshot = Join-Path $paths.Catalogs $snapshotName
+            } while (Test-Path -LiteralPath $snapshot)
+        }
+        $staging = Join-Path $paths.Catalogs ('.staging-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $staging -Force | Out-Null
+        try {
+            [System.IO.File]::WriteAllBytes((Join-Path $staging 'manifest.json'), $manifestBytes)
+            [System.IO.File]::WriteAllBytes((Join-Path $staging 'manifest.json.sig'), $sigBytes)
+            foreach ($file in $staged.Keys) {
+                [System.IO.File]::WriteAllBytes((Join-Path $staging $file), $staged[$file])
+            }
+            Move-Item -LiteralPath $staging -Destination $snapshot -Force
+        } catch {
+            if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
+            throw
+        }
     }
     Write-HushJsonAtomic -Path $paths.ActiveCatalog -Object ([pscustomobject]@{
             catalogVersion = $manifestValid.CatalogVersion
@@ -181,8 +231,10 @@ try {
     # snapshot is never selected for deletion, even if timestamps are unexpectedly equal.
     $oldSnapshots = @(Get-ChildItem -LiteralPath $paths.Catalogs -Directory -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTimeUtc -Descending | Select-Object -Skip 3)
+    $activeName = if ($active) { Split-Path -Leaf $active.Root } else { '' }
     foreach ($old in $oldSnapshots) {
-        if ($old.Name -ne $snapshotName -and $old.Name -match '^[0-9]+-[0-9a-f]{16}$') {
+        if ($old.Name -ne $snapshotName -and $old.Name -ne $activeName -and
+            $old.Name -match '^[0-9]+-[0-9a-f]{16}(?:-[0-9a-f]{8})?$') {
             Remove-Item -LiteralPath $old.FullName -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
@@ -192,12 +244,33 @@ try {
     #    sharing state.json with the SYSTEM enforcer would race (lost updates). The enforcer
     #    reads this for its staleness check and remains the sole writer of state.json.
     Write-HushJsonAtomic -Path $paths.FetchStatus -Object ([pscustomobject]@{
-            lastFetchUtc = [datetime]::UtcNow.ToString('o')
+            operationId    = $fetchOperationId
+            status         = 'succeeded'
+            requestedAtUtc = $fetchRequestedAtUtc
+            completedAtUtc = [datetime]::UtcNow.ToString('o')
+            lastFetchUtc   = [datetime]::UtcNow.ToString('o')
+            exitCode       = 0
         })
 
     Write-HushLog -Component 'fetch' -Message "Fetch complete. Catalog v$($manifestValid.CatalogVersion) with $($staged.Count) definition(s) verified and activated."
+    Exit-HushCatalogLock -Lock $catalogLock
+    $catalogLock = $null
     exit 0
 } catch {
+    Exit-HushCatalogLock -Lock $catalogLock
+    if ($paths -and (Test-Path -LiteralPath $paths.Cache)) {
+        try {
+            Write-HushJsonAtomic -Path $paths.FetchStatus -Object ([pscustomobject]@{
+                    operationId    = $fetchOperationId
+                    status         = 'failed'
+                    requestedAtUtc = $fetchRequestedAtUtc
+                    completedAtUtc = [datetime]::UtcNow.ToString('o')
+                    exitCode       = 1
+                    lastFetchUtc   = if ($previousFetchStatus -and (Test-HushProp $previousFetchStatus 'lastFetchUtc')) { $previousFetchStatus.lastFetchUtc } else { $null }
+                    error          = $_.Exception.Message
+                })
+        } catch { }
+    }
     Write-HushLog -Level Error -Component 'fetch' -Message "Fetch aborted: $($_.Exception.Message)"
     exit 1
 }

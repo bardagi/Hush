@@ -13,18 +13,65 @@
 
 BeforeAll {
     . (Join-Path $PSScriptRoot '..\src\Hush.Common.ps1')
+    . (Join-Path $PSScriptRoot '..\src\Hush.InstallSecurity.ps1')
     $script:DefDir = Join-Path $PSScriptRoot '..\definitions'
 
     function New-HushTestDef {
         # A minimal schema-valid definition; pass -Actions to vary the actions array.
         param([object[]]$Actions = @())
+        $normalized = @()
+        $index = -1
+        foreach ($action in @($Actions)) {
+            $index++
+            if (-not (Test-HushProp $action 'id')) { $action | Add-Member id ("test-action-$index") -Force }
+            $normalized += $action
+        }
         [pscustomobject]@{
             schemaVersion     = 1
             name              = 'test-def'
             definitionVersion = 1
             updateDate        = '2026-01-01T00:00:00Z'
-            actions           = $Actions
+            actions           = $normalized
         }
+    }
+}
+
+Describe 'Installer tree trust boundary' {
+    BeforeEach {
+        $script:OldProgramData = $env:ProgramData
+        $script:InstallParent = Join-Path ([System.IO.Path]::GetTempPath()) ('hush-install-test-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:InstallParent -Force | Out-Null
+        $env:ProgramData = $script:InstallParent
+        $script:InstallRoot = Join-Path $script:InstallParent 'Hush'
+        New-Item -ItemType Directory -Path $script:InstallRoot -Force | Out-Null
+    }
+    AfterEach {
+        if ($script:OldProgramData) { $env:ProgramData = $script:OldProgramData }
+        else { Remove-Item Env:\ProgramData -ErrorAction SilentlyContinue }
+        Remove-Item -LiteralPath $script:InstallParent -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'rejects an explicit ACE from an unknown principal before securing the tree' {
+        $acl = Get-Acl -LiteralPath $script:InstallRoot
+        $everyone = New-Object System.Security.Principal.SecurityIdentifier('S-1-1-0')
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $everyone, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+        $acl.AddAccessRule($rule)
+        Set-Acl -LiteralPath $script:InstallRoot -AclObject $acl
+        { Assert-HushInstallTreeSafe -Root $script:InstallRoot } | Should -Throw '*unknown principal*'
+    }
+
+    It 'rejects a reparse point in the installation tree' {
+        $target = Join-Path $script:InstallParent 'outside'
+        New-Item -ItemType Directory -Path $target -Force | Out-Null
+        $link = Join-Path $script:InstallRoot 'bin'
+        try {
+            New-Item -ItemType Junction -Path $link -Target $target -ErrorAction Stop | Out-Null
+        } catch {
+            Set-ItResult -Skipped -Because 'This Windows account cannot create directory junctions.'
+            return
+        }
+        { Assert-HushInstallTreeSafe -Root $script:InstallRoot } | Should -Throw '*reparse point*'
     }
 }
 
@@ -61,6 +108,18 @@ Describe 'String / identifier validators' {
         Test-HushSafeCacheFileName '..\..\evil.json' | Should -BeFalse
         Test-HushSafeCacheFileName 'evil.exe' | Should -BeFalse
     }
+    It 'requires stable safe action identifiers' {
+        Test-HushSafeActionId 'stop-gupdate' | Should -BeTrue
+        Test-HushSafeActionId 'bad/id' | Should -BeFalse
+        (Test-HushDefinition -Def (New-HushTestDef @([pscustomobject]@{ type = 'stopService'; name = 'gupdate'; id = 'x' }))).Ok | Should -BeTrue
+        $missing = [pscustomobject]@{ type = 'stopService'; name = 'gupdate' }
+        (Test-HushDefinition -Def (New-HushTestDef @($missing))).Ok | Should -BeTrue
+        # The helper supplies an ID for ordinary tests; a raw definition must not.
+        (Test-HushDefinition -Def ([pscustomobject]@{
+                schemaVersion=1; name='raw'; definitionVersion=1; updateDate='2026-01-01T00:00:00Z';
+                actions =@([pscustomobject]@{ type = 'stopService'; name = 'gupdate' })
+            })).Ok | Should -BeFalse
+    }
     It 'sha256 must be 64 hex chars' {
         Test-HushSha256Hex ('a' * 64) | Should -BeTrue
         Test-HushSha256Hex 'xyz' | Should -BeFalse
@@ -79,6 +138,17 @@ Describe 'Autostart pattern validator (wildcards allowed, but bounded)' {
         Test-HushSafeAutostartPattern '..\x' | Should -BeFalse
         Test-HushSafeAutostartPattern '*' | Should -BeFalse
         Test-HushSafeAutostartPattern '**' | Should -BeFalse
+        Test-HushSafeAutostartPattern 'A*' | Should -BeFalse
+    }
+}
+
+Describe 'Scheduled-task target guardrails' {
+    It 'requires an exact task path and protects Hush tasks' {
+        Test-HushScheduledTaskPath '\' | Should -BeTrue
+        Test-HushScheduledTaskPath '\..\' | Should -BeFalse
+        Test-HushProtectedScheduledTask -Name 'Hush-Enforce' | Should -BeTrue
+        Test-HushProtectedScheduledTask -Name 'Hush-Fetch' | Should -BeTrue
+        Test-HushProtectedScheduledTask -Name 'Vendor-Task' | Should -BeFalse
     }
 }
 
@@ -91,7 +161,10 @@ Describe 'Registry path validator and write guardrail' {
     }
     It 'allows writes only under SOFTWARE\Policies\**' {
         Test-HushAllowedRegistryPath -Hive 'HKLM' -Path 'SOFTWARE\Policies\Google\Chrome' | Should -BeTrue
-        Test-HushAllowedRegistryPath -Hive 'HKCU' -Path 'SOFTWARE\Policies\Microsoft\Edge' | Should -BeTrue
+        Test-HushAllowedRegistryPath -Hive 'HKLM' -Path 'SOFTWARE\Policies\Google\Chrome' | Should -BeTrue
+        Test-HushAllowedRegistryPath -Hive 'HKCU' -Path 'SOFTWARE\Policies\Google\Chrome' | Should -BeFalse
+        Test-HushAllowedRegistryValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Google\Chrome' -Name 'BackgroundModeEnabled' | Should -BeTrue
+        Test-HushAllowedRegistryValue -Hive 'HKLM' -Path 'SOFTWARE\Policies\Google\Chrome' -Name 'ExtensionInstallForcelist' | Should -BeFalse
         Test-HushAllowedRegistryPath -Hive 'HKLM' -Path 'SOFTWARE\Google\Chrome' | Should -BeFalse
     }
     It 'denylist wins even for paths under an allowed prefix' {
@@ -132,6 +205,60 @@ Describe 'Quiet-hours validator' {
         Test-HushQuietHourValue '24:00' | Should -BeFalse
         Test-HushQuietHourValue '12:60' | Should -BeFalse
         Test-HushQuietHourValue 'noon' | Should -BeFalse
+    }
+}
+
+Describe 'Preference migration and reversible journal' {
+    BeforeEach {
+        $script:OldHushRootForJournal = $env:HUSH_ROOT
+        $script:JournalRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('hush-journal-test-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:JournalRoot -Force | Out-Null
+        $env:HUSH_ROOT = $script:JournalRoot
+    }
+    AfterEach {
+        if ($script:OldHushRootForJournal) { $env:HUSH_ROOT = $script:OldHushRootForJournal }
+        else { Remove-Item Env:\HUSH_ROOT -ErrorAction SilentlyContinue }
+        Remove-Item -LiteralPath $script:JournalRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'migrates only user preferences out of legacy state.json' {
+        [pscustomobject]@{
+            snoozeUntil     = '2026-08-12T10:00:00Z'
+            quietHours      = @([pscustomobject]@{ start = '22:00'; end = '07:00' })
+            catalogVersion  = 7
+            appliedVersions = [pscustomobject]@{ chrome = 3 }
+        } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $script:JournalRoot 'state.json') -Encoding UTF8
+        $preferences = Get-HushPreferences
+        (ConvertTo-HushUtc $preferences.snoozeUntil).ToString('o') | Should -Be '2026-08-12T10:00:00.0000000Z'
+        @($preferences.quietHours).Count | Should -Be 1
+        (Read-HushJson -Path (Join-Path $script:JournalRoot 'preferences.json')).quietHours.start | Should -Be '22:00'
+        (Test-HushProp (Read-HushJson -Path (Join-Path $script:JournalRoot 'preferences.json')) 'catalogVersion') | Should -BeFalse
+    }
+
+    It 'captures service state, restores it, and is idempotent' {
+        Mock Get-Service { [pscustomobject]@{ Name = 'TestSvc'; Status = 'Stopped' } }
+        Mock Get-CimInstance { [pscustomobject]@{ StartMode = 'Disabled' } }
+        Mock Set-Service { }
+        $action = [pscustomobject]@{ id = 'disable-test'; name = 'TestSvc' }
+        Initialize-HushChange -DefinitionName 'test-def' -ActionId $action.id -Type service -Action $action | Out-Null
+        Complete-HushChange -DefinitionName 'test-def' -ActionId $action.id
+        $result = @(Restore-HushChanges -DefinitionName 'test-def' -ActionIds @('disable-test'))
+        $result.Status | Should -Be 'Applied'
+        (Get-HushChangeEntry -DefinitionName 'test-def' -ActionId 'disable-test') | Should -BeNullOrEmpty
+        @(Restore-HushChanges -DefinitionName 'test-def' -ActionIds @('disable-test')) | Should -BeNullOrEmpty
+        Should -Invoke Set-Service -Times 1 -Exactly
+    }
+
+    It 'leaves a journal entry pending when restoration fails' {
+        Mock Get-Service { [pscustomobject]@{ Name = 'TestSvc'; Status = 'Stopped' } }
+        Mock Get-CimInstance { [pscustomobject]@{ StartMode = 'Manual' } }
+        Mock Set-Service { throw 'simulated restore failure' }
+        $action = [pscustomobject]@{ id = 'disable-test'; name = 'TestSvc' }
+        Initialize-HushChange -DefinitionName 'test-def' -ActionId $action.id -Type service -Action $action | Out-Null
+        Complete-HushChange -DefinitionName 'test-def' -ActionId $action.id
+        $result = @(Restore-HushChanges -DefinitionName 'test-def' -ActionIds @('disable-test'))
+        $result.Status | Should -Be 'Error'
+        (Get-HushChangeEntry -DefinitionName 'test-def' -ActionId 'disable-test') | Should -Not -BeNullOrEmpty
     }
 }
 
@@ -247,6 +374,10 @@ Describe 'Test-HushDefinition - the chokepoint rejects bypass attempts' {
     It 'accepts a valid Policies registry write' {
         $reg = [pscustomobject]@{ type = 'setRegistryValue'; hive = 'HKLM'; path = 'SOFTWARE\Policies\Google\Chrome'; name = 'BackgroundModeEnabled'; valueType = 'DWord'; data = 0 }
         (Test-HushDefinition -Def (New-HushTestDef @($reg))).Ok | Should -BeTrue
+    }
+    It 'rejects HKCU because enforcement runs as SYSTEM' {
+        $reg = [pscustomobject]@{ type = 'setRegistryValue'; hive = 'HKCU'; path = 'SOFTWARE\Policies\Google\Chrome'; name = 'BackgroundModeEnabled'; valueType = 'DWord'; data = 0 }
+        (Test-HushDefinition -Def (New-HushTestDef @($reg))).Ok | Should -BeFalse
     }
     It 'rejects a non-integer definitionVersion' {
         $d = New-HushTestDef @()

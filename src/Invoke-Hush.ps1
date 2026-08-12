@@ -12,7 +12,18 @@
 #>
 
 [CmdletBinding()]
-param([switch]$Preview)
+param(
+    [switch]$Preview,
+    [string]$PreviewDefinition,
+    [string[]]$PreviewOptionalActions = @(),
+    [string]$RollbackDefinition,
+    [string[]]$RollbackActionIds = @(),
+    [switch]$RollbackAll
+)
+
+# A definition-targeted request is always a dry run. This prevents a caller from
+# accidentally applying a disabled definition merely by supplying its preview target.
+if ($PreviewDefinition) { $Preview = $true }
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -20,25 +31,60 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Hush.Common.ps1')
 
 $allResults = New-Object System.Collections.Generic.List[object]
+$errs = 0
+$catalogLock = $null
+$enforceOperationId = [guid]::NewGuid().ToString('N')
+$paths = $null
 
 try {
     $paths = Get-HushPaths
     $config = Get-HushConfig
     if (-not $config) { throw "Config not found at $($paths.Config)" }
+    $catalogLock = Enter-HushCatalogLock
+    if ($RollbackAll -or $RollbackDefinition) {
+        $rollbackResults = @(Restore-HushChanges -DefinitionName $RollbackDefinition -ActionIds $RollbackActionIds -All:$RollbackAll)
+        $rollbackResults
+        $rollbackErrors = @($rollbackResults | Where-Object { $_.Status -eq 'Error' }).Count
+        Exit-HushCatalogLock -Lock $catalogLock
+        $catalogLock = $null
+        if ($rollbackErrors -gt 0) { exit 1 }
+        exit 0
+    }
     $enabledDoc = Read-HushJson -Path $paths.Enabled
     $enabled = @(); if ($enabledDoc -and $enabledDoc.enabled) { $enabled = @($enabledDoc.enabled) }
+    $optionalActionsByDefinition = @{}
+    if ($enabledDoc -and (Test-HushProp $enabledDoc 'optionalActions') -and $enabledDoc.optionalActions) {
+        foreach ($p in $enabledDoc.optionalActions.PSObject.Properties) { $optionalActionsByDefinition[$p.Name] = @($p.Value) }
+    }
+    if ($PreviewDefinition) {
+        $enabled = @($PreviewDefinition)
+        $optionalActionsByDefinition[$PreviewDefinition] = @($PreviewOptionalActions)
+    }
     $exclusions = Read-HushJson -Path $paths.Exclusions
     $state = Read-HushJson -Path $paths.State
     if (-not $state) { $state = [pscustomobject]@{} }
+    $preferences = Get-HushPreferences
+    if (-not $Preview) {
+        $state | Add-Member lastEnforceOperationId $enforceOperationId -Force
+        $state | Add-Member lastEnforceStatus 'running' -Force
+        $state | Add-Member lastEnforceRequestedUtc ([datetime]::UtcNow.ToString('o')) -Force
+        Write-HushJsonAtomic -Path $paths.State -Object $state
+    }
 
     # --- Snooze / quiet-hours gate (preview bypasses so you can always see the plan) ---
     if (-not $Preview) {
-        $snooze = Test-HushSnoozed -State $state
+        $snooze = Test-HushSnoozed -State $preferences
         if ($snooze.Snoozed) {
             Write-HushLog -Component 'enforce' -Message "Enforcement skipped ($($snooze.Reason))."
             $state | Add-Member lastEnforceUtc ([datetime]::UtcNow.ToString('o')) -Force
             $state | Add-Member lastEnforceResult "skipped: $($snooze.Reason)" -Force
+            $state | Add-Member lastEnforceExitCode 0 -Force
+            $state | Add-Member lastEnforceStatus 'succeeded' -Force
+            $state | Add-Member lastEnforceError $null -Force
+            $state | Add-Member lastEnforceCompletedUtc ([datetime]::UtcNow.ToString('o')) -Force
             Write-HushJsonAtomic -Path $paths.State -Object $state
+            Exit-HushCatalogLock -Lock $catalogLock
+            $catalogLock = $null
             exit 0
         }
     }
@@ -112,7 +158,7 @@ try {
         foreach ($p in $state.appliedVersions.PSObject.Properties) { $applied[$p.Name] = $p.Value }
     }
 
-    $context = [pscustomobject]@{ Preview = [bool]$Preview; Exclusions = $exclusions; Config = $config }
+    $context = [pscustomobject]@{ Preview = [bool]$Preview; Exclusions = $exclusions; Config = $config; OptionalActionIds = @(); DefinitionName = $null }
 
     foreach ($name in $enabled) {
         if (-not $byName.ContainsKey($name)) {
@@ -148,6 +194,10 @@ try {
 
         $verb = if ($Preview) { 'Preview' } else { 'Applying' }
         Write-HushLog -Component 'enforce' -Message "$verb '$name' (v$($def.definitionVersion))."
+        $context.OptionalActionIds = if ($optionalActionsByDefinition.ContainsKey($name)) {
+            @($optionalActionsByDefinition[$name])
+        } else { @() }
+        $context.DefinitionName = $name
         foreach ($action in @($def.actions)) {
             foreach ($r in @(Invoke-HushAction -Action $action -Context $context)) {
                 $allResults.Add($r)
@@ -165,20 +215,42 @@ try {
         $appl = @($allResults | Where-Object { $_.Status -eq 'Applied' }).Count
         $errs = @($allResults | Where-Object { $_.Status -eq 'Error' }).Count
         $blocked = @($allResults | Where-Object { $_.Status -in @('Blocked', 'Excluded') }).Count
+        $errorDetails = @($allResults | Where-Object { $_.Status -eq 'Error' } |
+                ForEach-Object { "$($_.Type) $($_.Target): $($_.Detail)" })
         $state | Add-Member appliedVersions ([pscustomobject]$applied) -Force
         $state | Add-Member catalogVersion $manifestValid.CatalogVersion -Force
         $state | Add-Member catalogExpired ([bool]$expired) -Force
         $state | Add-Member staleDefinitions ([bool]$stale) -Force
         $state | Add-Member lastEnforceUtc ([datetime]::UtcNow.ToString('o')) -Force
         $state | Add-Member lastEnforceResult "applied=$appl errors=$errs blocked/excluded=$blocked" -Force
+        $state | Add-Member lastEnforceExitCode $(if ($errs -gt 0) { 1 } else { 0 }) -Force
+        $state | Add-Member lastEnforceStatus $(if ($errs -gt 0) { 'failed' } else { 'succeeded' }) -Force
+        $state | Add-Member lastEnforceError $(if ($errs -gt 0) { [string]::Join('; ', $errorDetails) } else { $null }) -Force
+        $state | Add-Member lastEnforceCompletedUtc ([datetime]::UtcNow.ToString('o')) -Force
         Write-HushJsonAtomic -Path $paths.State -Object $state
         Write-HushLog -Component 'enforce' -Message "Done. applied=$appl errors=$errs blocked/excluded=$blocked"
     }
 
     # Emit results so callers (the GUI Preview button) can display them.
     $allResults
+    Exit-HushCatalogLock -Lock $catalogLock
+    $catalogLock = $null
+    if (-not $Preview -and $errs -gt 0) { exit 1 }
     exit 0
 } catch {
+    Exit-HushCatalogLock -Lock $catalogLock
+    if ($paths -and (Test-Path -LiteralPath $paths.State) -and -not $Preview) {
+        try {
+            $failedState = Read-HushJson -Path $paths.State
+            if (-not $failedState) { $failedState = [pscustomobject]@{} }
+            $failedState | Add-Member lastEnforceOperationId $enforceOperationId -Force
+            $failedState | Add-Member lastEnforceStatus 'failed' -Force
+            $failedState | Add-Member lastEnforceExitCode 1 -Force
+            $failedState | Add-Member lastEnforceError $_.Exception.Message -Force
+            $failedState | Add-Member lastEnforceCompletedUtc ([datetime]::UtcNow.ToString('o')) -Force
+            Write-HushJsonAtomic -Path $paths.State -Object $failedState
+        } catch { }
+    }
     Write-HushLog -Level Error -Component 'enforce' -Message "Enforce aborted: $($_.Exception.Message)"
     $allResults
     exit 1

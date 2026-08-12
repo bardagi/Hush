@@ -52,19 +52,46 @@ function Get-HushCatalog {
         $manifest = [System.Text.Encoding]::UTF8.GetString($mb) | ConvertFrom-Json
         $valid = Test-HushManifest -Manifest $manifest -AllowExpired
         if (-not $valid.Ok) { return $null }
-        return $manifest.definitions
+        $definitions = @()
+        foreach ($entry in @($manifest.definitions)) {
+            $defPath = Join-Path $catalog.Root $entry.file
+            if (-not (Test-Path -LiteralPath $defPath)) { continue }
+            if ((Get-HushFileSha256Hex -Path $defPath) -ne $entry.sha256.ToLowerInvariant()) { continue }
+            $definition = Read-HushJson -Path $defPath
+            $definitionValid = Test-HushDefinition -Def $definition
+            if (-not $definitionValid.Ok) { continue }
+            if (-not (Test-HushManifestDefinitionMatch -Entry $entry -Definition $definition)) { continue }
+            $entry | Add-Member definition $definition -Force
+            $definitions += $entry
+        }
+        return $definitions
     } catch { return $null }
 }
 
 function Start-HushTask([string]$Name, [string]$ScriptName, [string[]]$ScriptArgs) {
-    # Prefer the scheduled task (correct security context); fall back to direct run.
+    # Prefer the scheduled task (correct security context), then wait briefly for a real
+    # completion result so the GUI does not report success merely because a task was queued.
     try {
         if (Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue) {
-            Start-ScheduledTask -TaskName $Name; return
+            $requested = Get-Date
+            Start-ScheduledTask -TaskName $Name
+            for ($i = 0; $i -lt 60; $i++) {
+                Start-Sleep -Milliseconds 500
+                $info = Get-ScheduledTaskInfo -TaskName $Name -ErrorAction SilentlyContinue
+                if (-not $info) { continue }
+                if ($info.LastRunTime -ge $requested -and $info.State -ne 'Running') {
+                    return [pscustomobject]@{ Status = 'Completed'; ExitCode = $info.LastTaskResult }
+                }
+            }
+            return [pscustomobject]@{ Status = 'TimedOut'; ExitCode = $null }
         }
     } catch { }
     $script = Resolve-HushScript $ScriptName
-    if ($script) { & $script @ScriptArgs | Out-Null }
+    if ($script) {
+        & $script @ScriptArgs | Out-Null
+        return [pscustomobject]@{ Status = 'Completed'; ExitCode = $LASTEXITCODE }
+    }
+    return [pscustomobject]@{ Status = 'Unavailable'; ExitCode = $null }
 }
 
 # ----------------------------------------------------------------- XAML
@@ -91,7 +118,7 @@ function Start-HushTask([string]$Name, [string]$ScriptName, [string[]]$ScriptArg
           <Border DockPanel.Dock="Bottom" Padding="10">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
               <TextBlock x:Name="DefStatus" VerticalAlignment="Center" Margin="0,0,12,0" Foreground="#6B7280"/>
-              <Button x:Name="BtnDefSave" Content="Save and apply" Padding="16,6"/>
+              <Button x:Name="BtnDefSave" Content="Save selections" Padding="16,6"/>
             </StackPanel>
           </Border>
           <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="DefList" Margin="10"/></ScrollViewer>
@@ -184,6 +211,7 @@ $enabledDoc = Read-HushJson -Path $paths.Enabled
 $enabledSet = @(); if ($enabledDoc -and $enabledDoc.enabled) { $enabledSet = @($enabledDoc.enabled) }
 
 $defCheckboxes = @{}
+$optionalCheckboxes = @{}
 if (-not $catalog) {
     (C 'DefStatus').Text = 'No verified catalog cached yet — use Status > Refresh definitions.'
 } else {
@@ -198,6 +226,35 @@ if (-not $catalog) {
         $t2.Text = "updated $($d.updateDate) · v$($d.definitionVersion) · $($d.name)"
         $t2.Foreground = '#9CA3AF'; $t2.FontSize = 11
         [void]$sp.Children.Add($t1); [void]$sp.Children.Add($t2)
+        foreach ($action in @($d.definition.actions | Where-Object { (Test-HushProp $_ 'optional') -and $_.optional })) {
+            $optionalId = [string]$action.id
+            $optionalBox = New-Object System.Windows.Controls.CheckBox
+            $optionalBox.Margin = '18,3,0,0'
+            $optionalBox.Content = "Optional: $($action.comment) [$optionalId]"
+            $selectedOptional = if ($enabledDoc -and (Test-HushProp $enabledDoc 'optionalActions') -and
+                (Test-HushProp $enabledDoc.optionalActions $d.name)) {
+                @($enabledDoc.optionalActions.$($d.name)) -contains $optionalId
+            } else { $false }
+            $optionalBox.IsChecked = $selectedOptional
+            $optionalCheckboxes["$($d.name)|$optionalId"] = $optionalBox
+            [void]$sp.Children.Add($optionalBox)
+        }
+        $previewButton = New-Object System.Windows.Controls.Button
+        $previewButton.Content = 'Preview this definition'
+        $previewButton.Padding = '8,3'
+        $previewButton.Margin = '18,6,0,0'
+        $previewName = [string]$d.name
+        $previewButton.Add_Click({
+                $ids = @($optionalCheckboxes.Keys | Where-Object {
+                        $_ -like "$previewName|*" -and $optionalCheckboxes[$_].IsChecked
+                    } | ForEach-Object { ($_ -split '\|', 2)[1] })
+                $previewScript = Resolve-HushScript 'Invoke-Hush.ps1'
+                $previewResult = @(& $previewScript -Preview -PreviewDefinition $previewName -PreviewOptionalActions $ids)
+                $previewLines = @($previewResult | ForEach-Object { "$($_.Type)  $($_.Target)  [$($_.Status)] $($_.Detail)" })
+                $previewText = if ($previewLines.Count) { [string]::Join("`r`n", $previewLines) } else { 'Nothing would be changed.' }
+                [System.Windows.MessageBox]::Show($previewText, "Hush — $previewName preview") | Out-Null
+            }.GetNewClosure())
+        [void]$sp.Children.Add($previewButton)
         $cb.Content = $sp
         [void](C 'DefList').Children.Add($cb)
         $defCheckboxes[$d.name] = $cb
@@ -206,10 +263,54 @@ if (-not $catalog) {
 
 (C 'BtnDefSave').Add_Click({
         $sel = @($defCheckboxes.Keys | Where-Object { $defCheckboxes[$_].IsChecked })
-        Write-HushJsonAtomic -Path $paths.Enabled -Object ([pscustomobject]@{ enabled = $sel })
-        Start-HushTask -Name 'Hush-Fetch'   -ScriptName 'Update-HushDefinitions.ps1'
-        Start-HushTask -Name 'Hush-Enforce' -ScriptName 'Invoke-Hush.ps1'
-        [System.Windows.MessageBox]::Show("Saved. Enforcing: $([string]::Join(', ', $sel))", 'Hush') | Out-Null
+        $optional = [ordered]@{}
+        foreach ($key in @($optionalCheckboxes.Keys)) {
+            if (-not $optionalCheckboxes[$key].IsChecked) { continue }
+            $parts = $key -split '\|', 2
+            if (-not $optional.Contains($parts[0])) { $optional[$parts[0]] = @() }
+            $optional[$parts[0]] += $parts[1]
+        }
+        $oldEnabled = if ($enabledDoc -and $enabledDoc.enabled) { @($enabledDoc.enabled) } else { @() }
+        $removedDefinitions = @($oldEnabled | Where-Object { $sel -notcontains $_ })
+        $removedOptional = @()
+        if ($enabledDoc -and (Test-HushProp $enabledDoc 'optionalActions') -and $enabledDoc.optionalActions) {
+            foreach ($definitionName in @($enabledDoc.optionalActions.PSObject.Properties.Name)) {
+                if ($removedDefinitions -contains $definitionName) { continue }
+                $oldIds = @($enabledDoc.optionalActions.$definitionName)
+                $newIds = if ($optional.Contains($definitionName)) { @($optional[$definitionName]) } else { @() }
+                foreach ($oldId in $oldIds) {
+                    if ($newIds -notcontains $oldId) {
+                        $removedOptional += [pscustomobject]@{ DefinitionName = $definitionName; ActionId = [string]$oldId }
+                    }
+                }
+            }
+        }
+        if ($removedDefinitions.Count -gt 0 -or $removedOptional.Count -gt 0) {
+            $confirm = [System.Windows.MessageBox]::Show(
+                'Disabling selections will restore Hush-managed reversible changes. Continue?',
+                'Hush — restore changes', 'YesNo', 'Warning')
+            if ($confirm -ne 'Yes') { return }
+            $rollbackScript = Resolve-HushScript 'Invoke-Hush.ps1'
+            foreach ($definitionName in $removedDefinitions) {
+                & $rollbackScript -RollbackDefinition $definitionName | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    [System.Windows.MessageBox]::Show("Could not restore '$definitionName'. Selections were not changed.", 'Hush') | Out-Null
+                    return
+                }
+            }
+            foreach ($removedAction in $removedOptional) {
+                & $rollbackScript -RollbackDefinition $removedAction.DefinitionName -RollbackActionIds $removedAction.ActionId | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    [System.Windows.MessageBox]::Show("Could not restore optional action '$($removedAction.ActionId)'. Selections were not changed.", 'Hush') | Out-Null
+                    return
+                }
+            }
+        }
+        Write-HushJsonAtomic -Path $paths.Enabled -Object ([pscustomobject]@{
+                enabled         = $sel
+                optionalActions = [pscustomobject]$optional
+            })
+        [System.Windows.MessageBox]::Show("Saved selections. Preview a definition before running enforcement.", 'Hush') | Out-Null
     })
 
 # ----------------------------------------------------------------- Exclusions
@@ -232,14 +333,15 @@ if ($excl) {
 
 # ----------------------------------------------------------------- Snooze / quiet hours
 function Get-State { $s = Read-HushJson -Path $paths.State; if (-not $s) { [pscustomobject]@{} } else { $s } }
+function Get-Preferences { Get-HushPreferences }
 function Set-Snooze([datetime]$UntilUtc) {
-    $s = Get-State
+    $s = Get-Preferences
     $s | Add-Member snoozeUntil $UntilUtc.ToString('o') -Force
-    Write-HushJsonAtomic -Path $paths.State -Object $s
+    Write-HushJsonAtomic -Path $paths.Preferences -Object $s
     Update-SnoozeStatus
 }
 function Update-SnoozeStatus {
-    $s = Get-State
+    $s = Get-Preferences
     if ((Test-HushProp $s 'snoozeUntil') -and $s.snoozeUntil) {
         try {
             $u = ConvertTo-HushUtc $s.snoozeUntil
@@ -256,11 +358,11 @@ function Update-SnoozeStatus {
         Set-Snooze ($next7.ToUniversalTime())
     })
 (C 'BtnSnoozeClr').Add_Click({
-        $s = Get-State; $s | Add-Member snoozeUntil $null -Force
-        Write-HushJsonAtomic -Path $paths.State -Object $s; Update-SnoozeStatus
+        $s = Get-Preferences; $s | Add-Member snoozeUntil $null -Force
+        Write-HushJsonAtomic -Path $paths.Preferences -Object $s; Update-SnoozeStatus
     })
 # Quiet-hours initial values (first window if any).
-$st0 = Get-State
+$st0 = Get-Preferences
 if ((Test-HushProp $st0 'quietHours') -and @($st0.quietHours).Count -gt 0) {
     (C 'QhStart').Text = $st0.quietHours[0].start; (C 'QhEnd').Text = $st0.quietHours[0].end
 }
@@ -271,14 +373,14 @@ if ((Test-HushProp $st0 'quietHours') -and @($st0.quietHours).Count -gt 0) {
             [System.Windows.MessageBox]::Show('Use 24h HH:mm for quiet hours, for example 22:00 to 07:00.', 'Hush') | Out-Null
             return
         }
-        $s = Get-State
+        $s = Get-Preferences
         $s | Add-Member quietHours @([pscustomobject]@{ start = $start; end = $end }) -Force
-        Write-HushJsonAtomic -Path $paths.State -Object $s
+        Write-HushJsonAtomic -Path $paths.Preferences -Object $s
         [System.Windows.MessageBox]::Show('Quiet hours saved.', 'Hush') | Out-Null
     })
 (C 'BtnQhClear').Add_Click({
-        $s = Get-State; $s | Add-Member quietHours @() -Force
-        Write-HushJsonAtomic -Path $paths.State -Object $s
+        $s = Get-Preferences; $s | Add-Member quietHours @() -Force
+        Write-HushJsonAtomic -Path $paths.Preferences -Object $s
         (C 'QhStart').Text = ''; (C 'QhEnd').Text = ''
     })
 Update-SnoozeStatus
@@ -317,22 +419,34 @@ Update-BackupList
 # ----------------------------------------------------------------- Status
 function Update-StatusTab {
     $s = Get-State
-    # lastFetchUtc lives in the cache's fetch-status.json (written by the LOCAL SERVICE
-    # fetcher); everything else lives in state.json (written by the SYSTEM enforcer).
+    # Fetch operation status lives in the cache's fetch-status.json (written by LOCAL SERVICE);
+    # runtime enforcement status lives in state.json (written by SYSTEM).
     $fs = Read-HushJson -Path $paths.FetchStatus
     $lf = if ((Test-HushProp $fs 'lastFetchUtc') -and $fs.lastFetchUtc) { (ConvertTo-HushUtc $fs.lastFetchUtc).ToLocalTime() } else { 'never' }
     $le = if ((Test-HushProp $s 'lastEnforceUtc') -and $s.lastEnforceUtc) { (ConvertTo-HushUtc $s.lastEnforceUtc).ToLocalTime() } else { 'never' }
     (C 'StLastFetch').Text = "Last definitions refresh: $lf"
     (C 'StLastEnforce').Text = "Last enforcement run: $le"
-    (C 'StResult').Text = if ((Test-HushProp $s 'lastEnforceResult') -and $s.lastEnforceResult) { "Result: $($s.lastEnforceResult)" } else { '' }
-    if ((Test-HushProp $s 'staleDefinitions') -and $s.staleDefinitions) {
-        (C 'StaleText').Text = 'Definitions are stale — they have not refreshed recently. Check connectivity or the repo.'
+    $resultText = if ((Test-HushProp $s 'lastEnforceResult') -and $s.lastEnforceResult) { "Result: $($s.lastEnforceResult)" } else { '' }
+    if ((Test-HushProp $fs 'status') -and $fs.status -eq 'failed') { $resultText = "Fetch failed: $($fs.error)" }
+    if ((Test-HushProp $s 'lastEnforceStatus') -and $s.lastEnforceStatus -eq 'failed') { $resultText = "Enforcement failed: $($s.lastEnforceError)" }
+    (C 'StResult').Text = $resultText
+    $stale = (Test-HushProp $s 'staleDefinitions') -and $s.staleDefinitions
+    $expired = (Test-HushProp $s 'catalogExpired') -and $s.catalogExpired
+    if ($stale -or $expired) {
+        $warnings = @()
+        if ($stale) { $warnings += 'Definitions are stale — check connectivity or the repo.' }
+        if ($expired) { $warnings += 'The cached catalog is expired — enforcement is using the last-known-good policy.' }
+        (C 'StaleText').Text = [string]::Join(' ', $warnings)
         (C 'StaleBanner').Visibility = 'Visible'
-    }
+    } else { (C 'StaleBanner').Visibility = 'Collapsed' }
 }
 (C 'BtnFetchNow').Add_Click({
-        Start-HushTask -Name 'Hush-Fetch' -ScriptName 'Update-HushDefinitions.ps1'
-        [System.Windows.MessageBox]::Show('Refresh triggered. Reopen the window to see the updated catalog.', 'Hush') | Out-Null
+        $run = Start-HushTask -Name 'Hush-Fetch' -ScriptName 'Update-HushDefinitions.ps1'
+        $message = if ($run.Status -eq 'Completed' -and $run.ExitCode -eq 0) { 'Definitions refreshed successfully.' }
+        elseif ($run.Status -eq 'TimedOut') { 'Refresh is still running. Refresh this tab later.' }
+        else { "Refresh failed or was unavailable (status=$($run.Status), exit=$($run.ExitCode))." }
+        [System.Windows.MessageBox]::Show($message, 'Hush') | Out-Null
+        Update-StatusTab
     })
 (C 'BtnPreview').Add_Click({
         $script = Resolve-HushScript 'Invoke-Hush.ps1'
@@ -342,8 +456,11 @@ function Update-StatusTab {
         [System.Windows.MessageBox]::Show($text, 'Hush — preview') | Out-Null
     })
 (C 'BtnRunNow').Add_Click({
-        Start-HushTask -Name 'Hush-Enforce' -ScriptName 'Invoke-Hush.ps1'
-        [System.Windows.MessageBox]::Show('Enforcement triggered.', 'Hush') | Out-Null
+        $run = Start-HushTask -Name 'Hush-Enforce' -ScriptName 'Invoke-Hush.ps1'
+        $message = if ($run.Status -eq 'Completed' -and $run.ExitCode -eq 0) { 'Enforcement completed successfully.' }
+        elseif ($run.Status -eq 'TimedOut') { 'Enforcement is still running. Refresh this tab later.' }
+        else { "Enforcement failed or was unavailable (status=$($run.Status), exit=$($run.ExitCode))." }
+        [System.Windows.MessageBox]::Show($message, 'Hush') | Out-Null
         Update-StatusTab
     })
 Update-StatusTab
