@@ -18,7 +18,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$DefinitionsDir = (Join-Path (Split-Path -Parent $PSScriptRoot) 'definitions'),
+    [Parameter(Mandatory)][string]$DefinitionsDir,
     [string]$PrivateKeyPath,
     [int]$CatalogVersion = 0,
     [ValidateRange(1, 3650)][int]$ValidityDays = 90
@@ -32,7 +32,7 @@ if (-not (Test-Path -LiteralPath $PrivateKeyPath)) { throw "Private signing key 
 
 # Reuse the same validation the clients enforce, so we can never sign a catalog the fetcher
 # or enforcer would reject (bad filename / unsafe field / disallowed registry key, etc.).
-. (Join-Path (Split-Path -Parent $PSScriptRoot) 'src\Hush.Common.ps1')
+. (Join-Path (Split-Path -Parent $PSScriptRoot) 'src\Hush.Catalog.ps1')
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 function Write-Utf8NoBom([string]$Path, [string]$Text) { [System.IO.File]::WriteAllText($Path, $Text, $utf8NoBom) }

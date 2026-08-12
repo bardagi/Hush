@@ -183,6 +183,14 @@ Describe 'Enforcer (Preview) over a signed cache' {
         (Split-Path -Leaf $catalog.Root) | Should -Be '1-0123456789abcdef'
     }
     It 'records a failed enforcement operation and returns non-zero' {
+        # Earlier tests may leave a valid catalog snapshot behind. Remove only
+        # this test root's catalog state so the tampered legacy signature is
+        # guaranteed to be the source the enforcer reads.
+        $catalogs = Join-Path $script:Root 'cache\catalogs'
+        if (Test-Path -LiteralPath $catalogs) {
+            Remove-Item -LiteralPath $catalogs -Recurse -Force
+        }
+        Remove-Item -LiteralPath (Join-Path $script:Root 'cache\active-catalog.json') -Force -ErrorAction SilentlyContinue
         $sig = Join-Path $script:Root 'cache\manifest.json.sig'
         $bytes = [System.IO.File]::ReadAllBytes($sig); $bytes[0] = $bytes[0] -bxor 0xFF
         [System.IO.File]::WriteAllBytes($sig, $bytes)
