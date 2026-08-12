@@ -147,12 +147,11 @@ compromised fetcher cannot make SYSTEM apply forged instructions.
 ```
 Hush/
 ├─ install/   Install-Hush.ps1, Uninstall-Hush.ps1
-├─ src/       Update-HushDefinitions.ps1 (fetcher), Invoke-Hush.ps1 (enforcer),
-│             Hush.Common.ps1 (shared), config.example.json
+├─ src/       fetcher/enforcer entrypoints, compatibility loaders, config.example.json
+│  └─ lib/    split core, catalog-contract, policy, journal, platform, and action code
 ├─ gui/       Hush-Settings.ps1 (WPF, self-elevating)
-├─ tools/     New-HushSigningKey.ps1, Protect-HushManifest.ps1
-└─ definitions/   local fixtures/examples only; live catalog is in
-                  bardagi/hush-definitions
+├─ tools/     application quality and catalog bootstrap/signing tools
+└─ tests/fixtures/definitions/  local validation fixtures only
 ```
 
 Requires only **Windows PowerShell 5.1** (built into Windows 10/11) — no
@@ -167,14 +166,27 @@ modules to install.
    .\tools\New-HushSigningKey.ps1 -OutDir .
    # -> hush-public.xml (pin this), hush-private.xml.dpapi (KEEP OFFLINE)
    ```
-2. **Publish the definitions repo.** Put `manifest.json`,
-   `manifest.json.sig`, and the authored `*.json` files in
-   `bardagi/hush-definitions/definitions`. Keep its `.gitattributes` so git
-   does not rewrite line endings (that would break hashes/signatures). Protect
-   the default branch with pull requests and required validation checks.
-3. **Sign the catalog** whenever you add/edit a definition:
+2. **Bootstrap the definitions repo.** Create a new empty repository outside this
+   checkout and use the bootstrap tool with a full Hush commit SHA. It copies the
+   fixtures, public key, documentation, and pinned catalog CI, then signs the initial
+   catalog. The private key is used only on the offline signing machine and is never
+   copied into the new repository:
    ```powershell
-   .\tools\Protect-HushManifest.ps1 -DefinitionsDir .\definitions -PrivateKeyPath .\hush-private.xml.dpapi
+   .\tools\New-HushDefinitionsRepository.ps1 `
+       -Destination C:\src\hush-definitions `
+       -PublicKeyPath .\hush-public.xml `
+       -PrivateKeyPath .\hush-private.xml.dpapi `
+       -HushRef '<40-character Hush commit SHA>'
+   ```
+   Push that generated directory to `bardagi/hush-definitions` and protect its
+   default branch with pull requests and required validation checks. Its workflow
+   checks out the pinned Hush commit and runs `Test-HushCatalog.ps1` against the
+   committed public key.
+3. **Sign the catalog** whenever you add/edit a definition in that repository:
+   ```powershell
+   .\Hush\tools\Protect-HushManifest.ps1 `
+       -DefinitionsDir .\definitions `
+       -PrivateKeyPath .\hush-private.xml.dpapi
    git add definitions ; git commit -m "update policy" ; git push
    ```
    This regenerates `manifest.json` + `manifest.json.sig`, increments the
@@ -249,7 +261,7 @@ Removed autostarts are backed up to `backups\` and journaled along with prior
 service and registry state. Mark anything risky (e.g. updater tasks)
 `optional`/`disableOnly` to keep it off by default. Preview a disabled definition
 from the Definitions tab before saving or running it. See
-`definitions/chrome-background.json` for a complete example. `HKCU` actions are
+`tests/fixtures/definitions/chrome-background.json` for a complete example. `HKCU` actions are
 rejected under the SYSTEM enforcer; `allUsers` autostarts cover machine-wide
 locations and currently loaded user hives/profiles only.
 

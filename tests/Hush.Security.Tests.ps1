@@ -14,7 +14,7 @@
 BeforeAll {
     . (Join-Path $PSScriptRoot '..\src\Hush.Common.ps1')
     . (Join-Path $PSScriptRoot '..\src\Hush.InstallSecurity.ps1')
-    $script:DefDir = Join-Path $PSScriptRoot '..\definitions'
+    $script:DefDir = Join-Path $PSScriptRoot 'fixtures\definitions'
 
     function New-HushTestDef {
         # A minimal schema-valid definition; pass -Actions to vary the actions array.
@@ -33,6 +33,33 @@ BeforeAll {
             updateDate        = '2026-01-01T00:00:00Z'
             actions           = $normalized
         }
+    }
+}
+
+Describe 'Library loader boundaries' {
+    It 'keeps the catalog loader free of privileged runtime modules' {
+        $catalogLoader = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\src\Hush.Catalog.ps1') -Raw -Encoding UTF8
+        $catalogLoader | Should -Not -Match 'Hush\.Actions\.ps1'
+        $catalogLoader | Should -Not -Match 'Hush\.Journal\.ps1'
+        $catalogLoader | Should -Match 'Hush\.CatalogContract\.ps1'
+    }
+
+    It 'keeps the compatibility loader explicit and ordered' {
+        $commonLoader = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\src\Hush.Common.ps1') -Raw -Encoding UTF8
+        foreach ($library in @(
+                'Hush.Core.ps1', 'Hush.TargetPolicy.ps1', 'Hush.CatalogContract.ps1',
+                'Hush.CatalogStore.ps1', 'Hush.RuntimePolicy.ps1', 'Hush.Journal.ps1',
+                'Hush.Platform.ps1', 'Hush.Actions.ps1'
+            )) {
+            $commonLoader | Should -Match ([regex]::Escape($library))
+            Test-Path -LiteralPath (Join-Path $PSScriptRoot "..\src\lib\$library") | Should -BeTrue
+        }
+    }
+
+    It 'stages split libraries without copying authoring tools into the runtime bin' {
+        $installer = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\install\Install-Hush.ps1') -Raw -Encoding UTF8
+        $installer | Should -Match "srcDir 'lib\\\*\.ps1'"
+        $installer | Should -Not -Match "srcDir '\*\.ps1'"
     }
 }
 
@@ -410,7 +437,7 @@ Describe 'Test-HushManifestEntry - traversal and integrity' {
     }
 }
 
-Describe 'The shipped definitions still validate' {
+Describe 'The definition fixtures still validate' {
     It 'chrome-background.json is valid' {
         $def = Get-Content -LiteralPath (Join-Path $script:DefDir 'chrome-background.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         (Test-HushDefinition -Def $def).Ok | Should -BeTrue

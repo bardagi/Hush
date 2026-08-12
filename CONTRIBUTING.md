@@ -21,3 +21,13 @@ The command checks PowerShell formatting, lint and static-analysis rules, Window
 ```powershell
 .\tools\Invoke-Quality.ps1 -Fix
 ```
+
+## Code and catalog boundaries
+
+Runtime entrypoints dot-source `src\Hush.Common.ps1`, which is a compatibility loader for the
+split libraries under `src\lib`. Catalog authoring and verification use the smaller
+`src\Hush.Catalog.ps1` loader so policy tooling does not load privileged action code.
+
+The JSON files under `tests\fixtures\definitions` are test fixtures only. Use
+`tools\New-HushDefinitionsRepository.ps1` to bootstrap the independently released,
+signed catalog repository; do not add production policy changes to this application repo.

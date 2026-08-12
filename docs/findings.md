@@ -1,4 +1,4 @@
-# Hush findings ledger
+﻿# Hush findings ledger
 
 This is the authoritative implementation ledger for the usability, security, and stability
 review. A finding is `Fixed` only when the corresponding behavior is implemented and its
@@ -55,11 +55,12 @@ elevated install exercise still require a disposable Windows VM (tracked by F-01
 
 **Implementation:** Every action now requires a stable safe `id`. `enabled.json` persists
 `optionalActions`; optional actions default to `NotSelected` and run only when their ID is
-selected. The GUI renders per-action checkboxes with impact comments. Shipped definitions and
-`definitions/README.md` use the new contract.
+selected. The GUI renders per-action checkboxes with impact comments. Shipped definition
+fixtures and `tests/fixtures/definitions/README.md` use the new contract.
 
 **Files/interfaces:** `src/Hush.Common.ps1`, `src/Invoke-Hush.ps1`, `gui/Hush-Settings.ps1`,
-`definitions/*.json`, `README.md`, `definitions/README.md`.
+`src/lib/Hush.CatalogContract.ps1`, `tests/fixtures/definitions/*.json`, `README.md`,
+`tests/fixtures/definitions/README.md`.
 
 **Verification:** Pester `keeps optional actions disabled unless their stable ID is selected`
 and 70-test quality gate pass.
@@ -85,7 +86,7 @@ is marked non-reversible in preview output.
 `install/Uninstall-Hush.ps1`, `README.md`.
 
 **Verification:** Pester journal tests cover capture, idempotent restore, and simulated restore
-failure; the quality gate passes 70/70.
+failure; the quality gate passes 73/73.
 
 **Remaining limitation:** Live service/registry/task restore is not exercised against the host;
 the journal behavior is unit-tested with mocked services and validated backup schemas.
@@ -106,7 +107,7 @@ Cleanup never removes the active snapshot.
 **Files/interfaces:** `src/Update-HushDefinitions.ps1`, `src/Hush.Common.ps1`.
 
 **Verification:** Integration tests cover complete pointer reads and interrupted-pointer
-fallback; the quality gate passes 70/70.
+fallback; the quality gate passes 73/73.
 
 **Remaining limitation:** A multi-process stress test and interrupted filesystem write need a
 disposable Windows test harness (F-011).
@@ -124,7 +125,7 @@ without enforcement. Optional impact text is shown beside each toggle.
 **Files/interfaces:** `src/Invoke-Hush.ps1`, `gui/Hush-Settings.ps1`, `README.md`.
 
 **Verification:** Integration test previews `test-reg` while `enabled.json` is empty and
-confirms the file is unchanged; quality gate passes 70/70.
+confirms the file is unchanged; quality gate passes 73/73.
 
 **Remaining limitation:** WPF interaction remains manually verified rather than UI-automated.
 
@@ -143,7 +144,7 @@ operations use the shared lock and atomic JSON writes.
 `install/Install-Hush.ps1`, `src/config.example.json`.
 
 **Verification:** Preference migration test confirms runtime fields are not copied; quality
-gate passes 70/70.
+gate passes 73/73.
 
 **Remaining limitation:** A concurrent GUI/enforcer process stress test remains part of F-011.
 
@@ -164,7 +165,7 @@ failure state are surfaced.
 `gui/Hush-Settings.ps1`.
 
 **Verification:** Integration tests assert failed enforcer and fetch status documents and
-non-zero exits; quality gate passes 70/70.
+non-zero exits; quality gate passes 73/73.
 
 **Remaining limitation:** Scheduled-task timing is not tested on a live installed task.
 
@@ -179,14 +180,15 @@ broad, and registry policy writes allowed arbitrary values below a broad prefix.
 reserved. Autostart patterns need at least three literal characters. Registry writes fail closed
 unless the exact HKLM path/value allowlist matches. Action-time checks repeat the guardrails.
 
-**Files/interfaces:** `src/Hush.Common.ps1`, shipped definitions, `README.md`,
-`definitions/README.md`.
+**Files/interfaces:** `src/Hush.Common.ps1`, `src/lib/Hush.CatalogContract.ps1`, shipped
+definition fixtures, `README.md`, `tests/fixtures/definitions/README.md`.
 
 **Verification:** Pester covers short patterns, task paths/reserved names, exact Chrome policy
-value, dangerous paths, and action-time blocking; quality gate passes 70/70.
+value, dangerous paths, and action-time blocking; quality gate passes 73/73.
 
-**Remaining limitation:** No external catalog signing/release pipeline was changed in this
-repository.
+**Remaining limitation:** The external GitHub catalog repository still has to be created and
+published by an operator; this repository now provides the reproducible bootstrap and pinned
+CI generator for that handoff.
 
 ### F-009 — Backups and logs are readable by too many principals — Fixed
 
@@ -219,11 +221,12 @@ state that HKCU requires a future per-profile implementation. `allUsers` autosta
 mean machine-wide locations plus currently loaded user hives/profiles; Hush does not claim to
 load every profile.
 
-**Files/interfaces:** `src/Hush.Common.ps1`, tests, `README.md`, `definitions/README.md`,
+**Files/interfaces:** `src/Hush.Common.ps1`, `src/lib/Hush.CatalogContract.ps1`, tests,
+`README.md`, `tests/fixtures/definitions/README.md`,
 `src/config.example.json`.
 
 **Verification:** Pester rejects HKCU definitions and accepts only the exact shipped HKLM Chrome
-policy value; quality gate passes 70/70.
+policy value; quality gate passes 73/73.
 
 **Remaining limitation:** Per-profile HKCU enforcement is intentionally not implemented.
 
@@ -235,8 +238,8 @@ operation status, and snapshot interruption coverage.
 **Implementation completed:** The suite now has 70 tests covering those focused paths, plus
 schema/docs updates and PowerShell 7/5.1 compatibility checks.
 
-**Verification:** `.\tools\Invoke-Quality.ps1 -Fix` passes 70/70 under PowerShell 7 with
-PSScriptAnalyzer/JSON checks; Windows PowerShell 5.1 Pester passes 70/70.
+**Verification:** `.\tools\Invoke-Quality.ps1 -Fix` passes 73/73 under PowerShell 7 with
+PSScriptAnalyzer/JSON checks; Windows PowerShell 5.1 Pester passes 73/73.
 
 **Remaining limitation:** A disposable elevated install/uninstall exercise, effective ACL
 standard-user-write assertion, GUI automation, and multi-process concurrency stress test have
@@ -248,4 +251,5 @@ not been run in this worktree. Keep this finding `Deferred` until that harness i
 |---|---|
 | 2026-08-12 | Initial ledger created from the repository review. |
 | 2026-08-12 | Implemented installer ACL/reparse preflight, explicit optional action IDs, reversible journal/rollback, immutable catalog snapshots, separated preferences/runtime state, operation status, guardrails, HKCU rejection, and synchronized documentation. |
-| 2026-08-12 | Added focused regression coverage; PowerShell 7 quality gate and Windows PowerShell 5.1 Pester both pass 70/70. |
+| 2026-08-12 | Added focused regression coverage; PowerShell 7 quality gate and Windows PowerShell 5.1 Pester both pass 73/73. |
+| 2026-08-12 | Split the runtime library into ordered modules, added a catalog-only loader, moved policy files to test fixtures, and added the pinned definitions-repository bootstrap path. |

@@ -12,7 +12,7 @@
       "updateDate": "2026-08-12T00:00:00Z",
       "description": "Stop Google Chrome from running in the background.",
       "file": "chrome-background.json",
-      "sha256": "63c5a4adcd3dac634be7a5ee437ebc3df04e6a2a5a1526ea7d20cddc4e5ca533"
+      "sha256": "41671a6bd3c50cab8d8814d3fdc6d48139ad409c66cd3541f586ec39fce9cb38"
     },
     {
       "name": "adobe-background",
@@ -21,7 +21,7 @@
       "updateDate": "2026-06-18T00:00:00Z",
       "description": "Stop Adobe background updaters and Creative Cloud helpers.",
       "file": "adobe-background.json",
-      "sha256": "31d1f230885ca5e5ad859a3c65f4f6791069853358e57f54d383158eb0ad2939"
+      "sha256": "6fa3ef512f46ebce5a1d422486661d62fa43991870f6030c125c5478f9edb9be"
     }
   ]
 }

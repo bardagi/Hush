@@ -54,6 +54,7 @@ $cache = Join-Path $root 'cache'
 $catalogs = Join-Path $cache 'catalogs'
 $logs = Join-Path $root 'logs'
 $backups = Join-Path $root 'backups'
+$binLib = Join-Path $bin 'lib'
 
 . (Join-Path $srcDir 'Hush.InstallSecurity.ps1')
 
@@ -71,6 +72,9 @@ foreach ($d in @($bin, $cache, $logs, $backups)) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
 }
 Assert-HushInstallTreeSafe -Root $root
+if (-not (Test-Path -LiteralPath $binLib -PathType Container)) {
+    New-Item -ItemType Directory -Path $binLib -Force | Out-Null
+}
 if (-not (Test-Path -LiteralPath $catalogs -PathType Container)) {
     New-Item -ItemType Directory -Path $catalogs -Force | Out-Null
 }
@@ -80,8 +84,13 @@ if (-not (Test-Path -LiteralPath $catalogs -PathType Container)) {
 #    attacker-controlled locations.
 Protect-HushInstallTree -Root $root -Bin $bin -Cache $cache -Logs $logs -Backups $backups
 
-# 4) Copy scripts + GUI into the already-hardened executable directory.
-Copy-Item -Path (Join-Path $srcDir '*.ps1') -Destination $bin -Force
+# 4) Copy only the runtime entrypoints, compatibility loader, and its split libraries into
+#    the already-hardened executable directory. Authoring/signing tools stay out of the
+#    SYSTEM-executed tree.
+foreach ($runtimeScript in @('Hush.Common.ps1', 'Hush.WindowProbe.ps1', 'Invoke-Hush.ps1', 'Update-HushDefinitions.ps1')) {
+    Copy-Item -LiteralPath (Join-Path $srcDir $runtimeScript) -Destination $bin -Force
+}
+Copy-Item -Path (Join-Path $srcDir 'lib\*.ps1') -Destination $binLib -Force
 Copy-Item -Path (Join-Path $guiDir 'Hush-Settings.ps1') -Destination $bin -Force
 
 # 5) config.json

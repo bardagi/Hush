@@ -2,3 +2,4 @@
 # Without this, git autocrlf could rewrite line endings and break verification.
 *.json   -text
 *.sig    -text binary
+

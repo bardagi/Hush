@@ -1,8 +1,8 @@
-# Hush definitions catalog
+# Hush definition fixtures
 
-These files are the seed/fixture catalog for the Hush code repository. The live public catalog
-is published separately at `bardagi/hush-definitions` so policy changes can ship independently
-of the Hush binaries.
+These files are test fixtures for the Hush code repository. The live public catalog is maintained
+in the independent `bardagi/hush-definitions` repository and is bootstrapped from these fixtures
+only when a catalog repository is created or refreshed.
 
 The live repository should keep this layout:
 
@@ -18,8 +18,8 @@ Edit only the individual definition JSON files. On the offline signing machine, 
 manifest and detached signature with:
 
 ```powershell
-..\tools\Protect-HushManifest.ps1 `
-  -DefinitionsDir .\definitions `
+..\..\..\tools\Protect-HushManifest.ps1 `
+  -DefinitionsDir .\tests\fixtures\definitions `
   -PrivateKeyPath .\hush-private.xml.dpapi
 ```
 
@@ -54,3 +54,4 @@ and the shipped policy allowlist currently contains the Chrome `BackgroundModeEn
 `HKCU` is intentionally unsupported until a per-profile implementation exists. `allUsers`
 autostart scope covers machine-wide locations plus currently loaded user hives/profiles; it does
 not claim to load every user hive.
+

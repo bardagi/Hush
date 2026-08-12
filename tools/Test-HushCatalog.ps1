@@ -3,13 +3,13 @@
     Test-HushCatalog.ps1 — validate a published catalog without its private key.
 
     This is intended for the definitions repository's CI. It checks every authored JSON
-    definition, the generated manifest metadata and hashes, and (when supplied) the detached
-    signature against the public key. It never writes catalog files.
+    definition, the generated manifest metadata and hashes, and the detached signature
+    against the supplied public key. It never writes catalog files.
 #>
 
 [CmdletBinding()]
 param(
-    [string]$DefinitionsDir = (Join-Path (Split-Path -Parent $PSScriptRoot) 'definitions'),
+    [Parameter(Mandatory)][string]$DefinitionsDir,
     [string[]]$PublicKeyXml,
     [string[]]$PublicKeyPath,
     [switch]$AllowExpired
@@ -17,12 +17,16 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-. (Join-Path (Split-Path -Parent $PSScriptRoot) 'src\Hush.Common.ps1')
+. (Join-Path (Split-Path -Parent $PSScriptRoot) 'src\Hush.Catalog.ps1')
 
 $manifestPath = Join-Path $DefinitionsDir 'manifest.json'
 $signaturePath = "$manifestPath.sig"
 if (-not (Test-Path -LiteralPath $manifestPath)) { throw "Manifest not found: $manifestPath" }
 if (-not (Test-Path -LiteralPath $signaturePath)) { throw "Detached signature not found: $signaturePath" }
+
+if (-not $PublicKeyXml -and -not $PublicKeyPath) {
+    throw 'Provide -PublicKeyXml or -PublicKeyPath; catalog validation must verify the detached signature.'
+}
 
 $manifestBytes = [System.IO.File]::ReadAllBytes($manifestPath)
 $manifest = [System.Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
@@ -32,11 +36,12 @@ if (-not $manifestResult.Ok) { throw "Manifest invalid — $($manifestResult.Err
 $keys = @()
 if ($PublicKeyXml) { $keys += $PublicKeyXml }
 if ($PublicKeyPath) { foreach ($path in $PublicKeyPath) { $keys += (Get-Content -LiteralPath $path -Raw) } }
-if (@($keys).Count -gt 0) {
-    $signature = [System.IO.File]::ReadAllBytes($signaturePath)
-    if (-not (Test-HushSignature -Data $manifestBytes -Signature $signature -PublicKeyXml $keys)) {
-        throw 'Manifest signature does not verify against the supplied public key(s).'
-    }
+if (@($keys).Count -eq 0) {
+    throw 'No usable public key was supplied.'
+}
+$signature = [System.IO.File]::ReadAllBytes($signaturePath)
+if (-not (Test-HushSignature -Data $manifestBytes -Signature $signature -PublicKeyXml $keys)) {
+    throw 'Manifest signature does not verify against the supplied public key(s).'
 }
 
 foreach ($entry in @($manifest.definitions)) {
